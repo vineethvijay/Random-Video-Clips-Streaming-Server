@@ -1,0 +1,123 @@
+# version: '3.8'
+
+services:
+  # ── nginx-rtmp: Live streaming server ──────────────────────────
+  nginx-rtmp:
+    image: tiangolo/nginx-rtmp
+    container_name: nginx-rtmp
+    ports:
+      - "8080:8080"    # HLS playback
+      - "1935:1935"    # RTMP ingest
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    tmpfs:
+      - /tmp/hls:size=512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    networks:
+      - video-network
+
+  # ── Chunk generator: runs once a day, makes 2 chunks ───────────
+  chunk-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.generator
+    image: chunk-generator:latest
+    container_name: chunk-generator
+    volumes:
+      - ./generate_chunk.sh:/generate_chunk.sh:ro
+      - /root/HDD_INT/tube_archiver:/videos:ro
+      - /root/HDD_INT/tube_archiver-chunks:/chunks
+    environment:
+      - CHUNK_DURATION=${CHUNK_DURATION:-300}
+      - CLIP_MIN=${CLIP_MIN:-5}
+      - CLIP_MAX=${CLIP_MAX:-10}
+      - CHUNKS_PER_RUN=${CHUNKS_PER_RUN:-4}
+      - MAX_CHUNKS=${MAX_CHUNKS:-56}
+      - VIDEO_DIR=/videos
+      - OUTPUT_DIR=/chunks
+    entrypoint: >
+      /bin/sh -c "
+        echo '[chunk-gen] Ready to be triggered by host cron.' &&
+        sleep infinity
+      "
+    shm_size: '512m'
+    tmpfs:
+      - /tmp:size=4g
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    networks:
+      - video-network
+
+  # ── Streamer: shuffles through pre-made chunks ─────────────────
+  random-video-streamer:
+    build: .
+    image: random-video-streamer:latest
+    container_name: random-video-streamer
+    init: true
+    ports:
+      - "${PORT:-8081}:8080"
+    volumes:
+      - ./data:/app/data
+      - /root/MUSIC-for-yt:/audio:ro
+      - /root/HDD_INT/tube_archiver-chunks:/chunks
+    environment:
+      - CHUNK_FOLDER=/chunks
+      - PORT=8080
+      - DB_PATH=/app/data/segments.db
+      - RTMP_URL=rtmp://nginx-rtmp:1935/live/stream
+      - AUDIO_FOLDER=/audio
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    shm_size: '256m'
+    tmpfs:
+      - /tmp:size=256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+    restart: unless-stopped
+    networks:
+      - video-network
+
+networks:
+  video-network:
+    driver: bridge
