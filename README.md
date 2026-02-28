@@ -24,15 +24,15 @@ flowchart TD
 
     %% Subgraphs for Domains
     subgraph Host ["Host Storage Volumes"]
-        V[Video Source</br>(/videos)]:::volume
-        A[Audio Source</br>(/audio)]:::volume
-        C[Generated Chunks</br>(/chunks)]:::volume
-        Q[.video_queue.txt</br>(LRU Tracker)]:::volume
+        V["Video Source<br>(/videos)"]:::volume
+        A["Audio Source<br>(/audio)"]:::volume
+        C["Generated Chunks<br>(/chunks)"]:::volume
+        Q[".video_queue.txt<br>(LRU Tracker)"]:::volume
     end
 
     subgraph Gen ["chunk-generator (Container)"]
         bash[generate_chunk.sh]:::container
-        ffmpeg1[FFmpeg Encoder</br>CPU or NVIDIA GPU]:::container
+        ffmpeg1["FFmpeg Encoder<br>CPU or NVIDIA GPU"]:::container
     end
 
     subgraph Stream ["random-video-streamer (Container)"]
