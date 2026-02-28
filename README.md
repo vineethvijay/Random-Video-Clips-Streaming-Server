@@ -1,6 +1,6 @@
 # Random Video Clips Streaming Server
 
-A containerized live streaming server that continuously shuffles random clips from your video collection and plays them as a never-ending HLS live stream — with optional continuous background audio that plays independently from the video shuffling.
+A containerized live streaming server that continuously shuffles and streams random short clips from your video collection and plays them as a never-ending HLS live stream - with optional continuous background audio that plays independently from the video shuffling.
 
 ## Features
 
@@ -14,16 +14,71 @@ A containerized live streaming server that continuously shuffles random clips fr
 
 ## Architecture
 
-```
-Video clips  →  FFmpeg (extract, normalize, no audio)  →  pipe
-MP3 folder   →  FFmpeg (loop forever)  ─────────────────────┐
-                                                             ├─► nginx-rtmp ─► HLS
-Clip Pusher  →  persistent RTMP connection  ────────────────┘
+```mermaid
+flowchart TD
+    %% Define Styles
+    classDef container fill:#2b3137,stroke:#24292e,stroke-width:2px,color:#fafbfc
+    classDef volume fill:#f6f8fa,stroke:#d1d5da,stroke-width:2px,color:#24292e,stroke-dasharray: 5 5
+    classDef output fill:#0366d6,stroke:#0366d6,stroke-width:3px,color:#ffffff,font-weight:bold
+    classDef interface fill:#28a745,stroke:#2ea043,stroke-width:2px,color:#ffffff
+
+    %% Subgraphs for Domains
+    subgraph Host ["Host Storage Volumes"]
+        V[Video Source</br>(/videos)]:::volume
+        A[Audio Source</br>(/audio)]:::volume
+        C[Generated Chunks</br>(/chunks)]:::volume
+        Q[.video_queue.txt</br>(LRU Tracker)]:::volume
+    end
+
+    subgraph Gen ["chunk-generator (Container)"]
+        bash[generate_chunk.sh]:::container
+        ffmpeg1[FFmpeg Encoder</br>CPU or NVIDIA GPU]:::container
+    end
+
+    subgraph Stream ["random-video-streamer (Container)"]
+        API[Flask Web Dashboard]:::container
+        Pusher[Python Clip Pusher]:::container
+        ffmpeg2[FFmpeg Stream Mixer]:::container
+    end
+
+    subgraph Nginx ["nginx-rtmp (Container)"]
+        rtmp[RTMP Receiver]:::container
+        hls[HLS Packager]:::container
+    end
+
+    %% Client Layer
+    Dashboard[User Web Browser]:::interface
+    Player[Smart TV / VLC / iOS]:::interface
+
+    %% Generation Flow
+    V -->|Read Random/LRU| bash
+    Q <-->|Updates Order| bash
+    bash -->|Extracts 5m clips| ffmpeg1
+    ffmpeg1 -->|Encodes & Normalizes| C
+
+    %% Streaming Flow
+    C -->|Pipes video| Pusher
+    A -->|Pipes looping audio| Pusher
+    Pusher -->|Feeds combined segments| ffmpeg2
+    ffmpeg2 -->|Persistent Connection| rtmp
+
+    %% Final Packaging
+    rtmp -->|Formats segments| hls
+    
+    %% User Interfaces
+    API -.->|Writes trigger file| bash
+    API -.->|Reads state| C
+    Dashboard -.->|Clicks Generate| API
+    Player -->|Plays stream.m3u8| hls
+
+    %% Layout hints
+    style Host fill:transparent,stroke:#6a737d,stroke-dasharray: 5 5
 ```
 
-Two containers:
-- **nginx-rtmp** — receives the RTMP feed, writes HLS segments to tmpfs
-- **random-video-streamer** — picks random clips, extracts them silently, pipes them to RTMP while mixing in looping background audio
+The system operates across three decoupled, robust containers:
+- **`chunk-generator`** — runs in the background polling for manual UI triggers or automated schedules to crunch video segments down into highly normalized 5-minute `.mp4` chunks. Tracks history to prevent repeats.
+- **`random-video-streamer`** — the brain and web interface. Mixes the chunks with continuous looping background audio, preventing gaps in playback and pushing a 24/7 RTMP feed to NGINX.
+- **`nginx-rtmp`** — receives the feed, packages it efficiently into HLS segments on a temporary filesystem, and serves it seamlessly to devices over HTTP.
 
 ## Quick Start
 
