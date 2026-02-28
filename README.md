@@ -36,7 +36,7 @@ flowchart TD
     end
 
     subgraph Stream ["random-video-streamer (Container)"]
-        API[Flask Web Dashboard]:::container
+        API[Web Dashboard]:::container
         Pusher[Python Clip Pusher]:::container
         ffmpeg2[FFmpeg Stream Mixer]:::container
     end
@@ -53,7 +53,7 @@ flowchart TD
     %% Generation Flow
     V -->|Read Random/LRU| bash
     Q <-->|Updates Order| bash
-    bash -->|Extracts 5m clips| ffmpeg1
+    bash -->|Extracts short chunk (5m) clips| ffmpeg1
     ffmpeg1 -->|Encodes & Normalizes| C
 
     %% Streaming Flow
@@ -68,7 +68,7 @@ flowchart TD
     %% User Interfaces
     API -.->|Writes trigger file| bash
     API -.->|Reads state| C
-    Dashboard -.->|Clicks Generate| API
+    Dashboard -.->|Clicks Generate or Cron| API
     Player -->|Plays stream.m3u8| hls
 
     %% Layout hints
