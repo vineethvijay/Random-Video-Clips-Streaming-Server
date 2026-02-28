@@ -30,24 +30,24 @@ flowchart TD
         Q[".video_queue.txt<br>(LRU Tracker)"]:::volume
     end
 
-    subgraph Gen ["chunk-generator (Container)"]
+    subgraph Gen ["Container: chunk-generator"]
         bash[generate_chunk.sh]:::container
         ffmpeg1["FFmpeg Encoder<br>CPU or NVIDIA GPU"]:::container
     end
 
-    subgraph Stream ["random-video-streamer (Container)"]
+    subgraph Stream ["Container: random-video-streamer"]
         API[Web Dashboard]:::container
         Pusher[Python Clip Pusher]:::container
         ffmpeg2[FFmpeg Stream Mixer]:::container
     end
 
-    subgraph Nginx ["nginx-rtmp (Container)"]
+    subgraph Nginx ["Container: nginx-rtmp"]
         rtmp[RTMP Receiver]:::container
         hls[HLS Packager]:::container
     end
 
     %% Client Layer
-    Dashboard[User Web Browser]:::interface
+    Dashboard[Admin Web Browser Console]:::interface
     Player[Smart TV / VLC / iOS]:::interface
 
     %% Generation Flow
