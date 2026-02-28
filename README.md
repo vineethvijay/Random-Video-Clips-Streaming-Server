@@ -53,7 +53,7 @@ flowchart TD
     %% Generation Flow
     V -->|Read Random/LRU| bash
     Q <-->|Updates Order| bash
-    bash -->|Extracts short chunk (5m) clips| ffmpeg1
+    bash -->|"Extracts short chunk (5m) clips"| ffmpeg1
     ffmpeg1 -->|Encodes & Normalizes| C
 
     %% Streaming Flow
