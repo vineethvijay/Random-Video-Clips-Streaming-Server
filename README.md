@@ -73,7 +73,7 @@ flowchart TD
 
     %% Layout hints
     style Host fill:transparent,stroke:#6a737d,stroke-dasharray: 5 5
-    bash ~~~~~~~ API
+    bash ~~~ API
 ```
 
 The system operates across three decoupled, robust containers:
