@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Random Video Clips Streaming Server</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div class="max-w-6xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="mb-8 flex justify-between items-end border-b border-gray-700 pb-4">
+            <div>
+                <h1 class="text-3xl font-bold text-white mb-2">Streaming Server Dashboard</h1>
+                <p class="text-gray-400">Manage chunks and server configuration</p>
+            </div>
+            <div class="flex gap-4">
+                <a href="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8" target="_blank"
+                    class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow transition">▶ Watch
+                    Stream</a>
+                <button id="btn-generate"
+                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow transition font-medium whitespace-nowrap">Generate
+                    Chunks</button>
+                <button id="btn-status"
+                    class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded shadow transition whitespace-nowrap">Server
+                    Status</button>
+            </div>
+        </header>
+
+        <!-- Status Panel (Hidden by default) -->
+        <div id="status-panel-container"
+            class="hidden mb-8 bg-gray-950 border border-gray-700 rounded-lg p-4 overflow-x-auto shadow-inner">
+            <pre id="status-content" class="text-sm text-green-400 font-mono"></pre>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Left Column: Chunks -->
+            <div class="lg:col-span-2 space-y-6">
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden">
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
+                        <h2 class="text-xl font-semibold text-white">Generated Video Chunks</h2>
+                        <span
+                            class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{
+                            chunks|length }} Chunks</span>
+                    </div>
+                    <div class="p-0 overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-700/50">
+                                    <th
+                                        class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">
+                                        Filename</th>
+                                    <th
+                                        class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">
+                                        Created At</th>
+                                    <th
+                                        class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">
+                                        Size (MB)</th>
+                                    <th
+                                        class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700 text-right">
+                                        Status</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-700">
+                                {% for chunk in chunks %}
+                                <tr
+                                    class="transition duration-150 {% if chunk.name == current_chunk %}bg-blue-900/40 border-l-4 border-blue-500 shadow-md{% else %}hover:bg-gray-700/50{% endif %}">
+                                    <td
+                                        class="py-3 px-6 text-sm {% if chunk.name == current_chunk %}text-white font-bold{% else %}text-gray-300{% endif %}">
+                                        {{ chunk.name }}
+                                        {% if chunk.name == current_chunk %}
+                                        <span
+                                            class="ml-2 inline-block bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-[0_0_10px_rgba(37,99,235,0.8)] animate-pulse">Now
+                                            Streaming &#9654;</span>
+                                        {% endif %}
+                                    </td>
+                                    <td
+                                        class="py-3 px-6 text-sm {% if chunk.name == current_chunk %}text-gray-300 font-semibold{% else %}text-gray-400{% endif %}">
+                                        {{ chunk.created_at }}</td>
+                                    <td
+                                        class="py-3 px-6 text-sm {% if chunk.name == current_chunk %}text-gray-300 font-semibold{% else %}text-gray-400{% endif %}">
+                                        {{ chunk.size_mb }} MB</td>
+                                    <td class="py-3 px-6 text-sm text-right">
+                                        <span
+                                            class="text-orange-400 bg-orange-400/10 border-orange-400/20 text-xs px-2 py-1 rounded border">
+                                            Expires in ~{{ chunk.days_to_expire }} days
+                                        </span>
+                                    </td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="4" class="py-8 text-center text-gray-500">No chunks found in the chunks
+                                        folder.</td>
+                                </tr>
+                                <!-- End For Loop -->
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- System Information (Moved to Left Column) -->
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6 mt-6">
+                    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">System Information</h3>
+                    <ul class="space-y-4 text-sm text-gray-300 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2">
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">OS (Container)</span>
+                            <span class="font-mono text-right max-w-[60%]">{{ sys_info.os }} {% if sys_info.docker ==
+                                'Yes' %}(Docker){% endif %}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">CPU Cores (Container)</span>
+                            <span class="font-mono">{{ sys_info.cpu_cores }}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Hardware Accel</span>
+                            <span class="font-mono">{% if sys_info.hw_accel == 'nvidia' %}<span
+                                    class="text-green-400">NVIDIA GPU</span>{% else %}None (CPU){% endif %}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Port</span>
+                            <span class="font-mono">{{ settings.get('PORT', '8080') }}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2 md:col-span-2">
+                            <span class="text-gray-500 flex-shrink-0 mr-4">Video Folder</span>
+                            <span class="font-mono break-all text-right">{{ settings.get('VIDEO_FOLDER', '/videos')
+                                }}</span>
+                        </li>
+                        <li class="flex justify-between pb-1 md:col-span-2">
+                            <span class="text-gray-500 flex-shrink-0 mr-4">Audio Folder</span>
+                            <span class="font-mono break-all text-right">{{ settings.get('AUDIO_FOLDER', '(none)')
+                                }}</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Right Column: Settings -->
+            <div class="space-y-6">
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700">
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800">
+                        <h2 class="text-xl font-semibold text-white">Server Configuration</h2>
+                    </div>
+                    <div class="p-6">
+                        <div class="bg-blue-900/20 border border-blue-800 rounded p-4 mb-6">
+                            <p class="text-sm text-blue-200">
+                                <strong class="text-blue-100">Read-only Configuration.</strong> Settings are loaded from
+                                the <code class="bg-gray-800 px-1 rounded border border-gray-700">.env</code> file. To
+                                modify: edit the <code
+                                    class="bg-gray-800 px-1 rounded border border-gray-700">.env</code> file directly on
+                                the host server and run <code
+                                    class="bg-gray-800 px-1 py-0.5 rounded text-xs select-all whitespace-nowrap border border-gray-700 text-blue-100 hover:text-white transition">docker compose down && docker compose up -d</code>
+                                to apply changes.
+                            </p>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Max Chunks to Keep</label>
+                                <input type="number" readonly value="{{ settings.get('MAX_CHUNKS', '56') }}"
+                                    class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Target Chunk Duration
+                                    (s)</label>
+                                <input type="number" readonly value="{{ settings.get('CHUNK_DURATION', '300') }}"
+                                    class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-400 mb-1">Min Clip (s)</label>
+                                    <input type="number" readonly value="{{ settings.get('CLIP_MIN', '6') }}"
+                                        class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-400 mb-1">Max Clip (s)</label>
+                                    <input type="number" readonly value="{{ settings.get('CLIP_MAX', '6') }}"
+                                        class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Hardware
+                                    Acceleration</label>
+                                <input type="text" readonly
+                                    value="{% if settings.get('HW_ACCEL') == 'nvidia' %}NVIDIA GPU Acceleration{% else %}None (CPU Encoding){% endif %}"
+                                    class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('btn-status').addEventListener('click', async () => {
+            const container = document.getElementById('status-panel-container');
+            const content = document.getElementById('status-content');
+
+            // Toggle visibility
+            if (!container.classList.contains('hidden')) {
+                container.classList.add('hidden');
+                return;
+            }
+
+            content.textContent = 'Loading...';
+            container.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                content.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                content.textContent = 'Error fetching server status.\n' + error.message;
+            }
+        });
+
+        document.getElementById('btn-generate').addEventListener('click', async () => {
+            const btn = document.getElementById('btn-generate');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = 'Triggering...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/generate_chunk', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    btn.innerHTML = 'Generation Triggered!';
+                    btn.classList.replace('bg-green-600', 'bg-blue-600');
+                    btn.classList.replace('hover:bg-green-700', 'hover:bg-blue-700');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    alert('Error: ' + data.error);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                alert('Error triggering generation: ' + error.message);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+
+</html>

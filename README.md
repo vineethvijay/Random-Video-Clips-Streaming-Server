@@ -4,12 +4,13 @@ A containerized live streaming server that continuously shuffles random clips fr
 
 ## Features
 
+- **Web Dashboard** — internal UI to monitor chunks, view system status, and manually trigger generation
 - **Continuous live stream** — no playback gaps; clips are piped into a single persistent RTMP connection
 - **Continuous background audio** — mount an MP3 folder; audio plays uninterrupted while video clips shuffle
-- **Smart shuffle** — avoids repeats until all segments of all videos have been played, then resets
+- **Strict LRU Smart shuffle** — perfectly cycles through videos using a Least-Recently-Used queue to completely avoid consecutive duplication until all videos are used
 - **Normalized output** — all clips transcoded to a consistent resolution/fps so transitions are smooth
 - **Compatible** — works with VLC, Safari, Samsung TV IPTV apps, and any HLS player
-- **Production-grade** — Gunicorn + gevent, tini init for zombie reaping, healthchecks, log rotation
+- **Production-grade** — Dockerized with Gunicorn + gevent, tini init for zombie reaping, healthchecks, and log rotation
 
 ## Architecture
 
@@ -47,10 +48,11 @@ PORT=8081           # Flask API port
 docker compose up -d
 ```
 
-**3. Watch:**
+**3. Watch & Manage:**
 | URL | Purpose |
 |-----|---------|
-| `http://server-ip:8080/hls/stream.m3u8` | **Live HLS stream** (VLC, Safari, TV apps) |
+| `http://server-ip:8081/` | **Web Dashboard** (Monitor chunks, trigger generation) |
+| `http://server-ip:8082/hls/stream.m3u8` | **Live HLS stream** (VLC, Safari, TV apps) |
 | `http://server-ip:8081/iptv.m3u` | IPTV playlist (points to the HLS stream) |
 | `http://server-ip:8081/api/status` | Server status |
 | `http://server-ip:8081/api/stream-status` | Clip pusher status |
@@ -95,23 +97,30 @@ These variables control how new video chunks are created from your library.
 
 ## Hardware Requirements
 
-### GPU Acceleration (NVIDIA)
-The **Chunk Generator** is optimized for NVIDIA hardware using `h264_nvenc`.
-- **Drivers**: Host must have NVIDIA drivers installed.
-- **Docker**: `nvidia-container-toolkit` must be installed on the host.
-- **Resources**: The `docker-compose.yml` is configured to reserve 1 NVIDIA GPU.
+### GPU Acceleration (NVIDIA) vs CPU (Mac / Linux)
+The **Chunk Generator** supports both CPU encoding (`libx264`) and NVIDIA hardware acceleration (`h264_nvenc`).
 
-If you do NOT have an NVIDIA GPU, you must edit `generate_chunk.sh` to use `libx264` instead of `h264_nvenc`.
+**For CPU Encoding (Default & Mac-compatible):**
+- Ensure `.env` has `HW_ACCEL=none`.
+- Run completely natively with `docker compose up -d`.
+
+**For NVIDIA GPU Acceleration:**
+- **Drivers**: Host must have NVIDIA drivers and `nvidia-container-toolkit` installed.
+- **Config**: Set `HW_ACCEL=nvidia` in `.env`.
+- **Run**: Use the GPU override file to reserve hardware resources:
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+  ```
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/` | Service info & version |
+| GET | `/` | Web Dashboard HTML |
 | GET | `/api/status` | Full server status & config overview |
 | GET | `/api/stream-status` | RTMP pusher & current audio/chunk info |
 | GET | `/iptv.m3u` | IPTV playlist (M3U) for external players |
-| POST | `/api/reset` | (N/A) Tracking is currently managed by SQLite |
+| POST | `/api/generate_chunk` | Triggers the generator to build new chunks |
 
 ## Troubleshooting
 
