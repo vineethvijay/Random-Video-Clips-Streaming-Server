@@ -8,6 +8,10 @@ CHUNKS_PER_RUN="${CHUNKS_PER_RUN:-4}"
 MAX_CHUNKS="${MAX_CHUNKS:-56}"
 HW_ACCEL="${HW_ACCEL:-none}"
 
+RUNNING_FILE="$OUTPUT_DIR/.generation_running"
+cleanup() { rm -f "$RUNNING_FILE"; }
+trap cleanup EXIT
+
 mkdir -p "$OUTPUT_DIR"
 
 if [ "$1" != "manual" ]; then
@@ -54,6 +58,8 @@ else
   mv "$TEMP_QUEUE" "$QUEUE_FILE"
 fi
 rm -f "$CURRENT_VIDEOS"
+
+touch "$RUNNING_FILE"
 
 # Generate CHUNKS_PER_RUN chunks
 for i in $(seq 1 "$CHUNKS_PER_RUN"); do

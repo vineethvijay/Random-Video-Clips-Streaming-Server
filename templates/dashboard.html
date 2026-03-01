@@ -5,12 +5,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Random Video Clips Streaming Server</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231e3a8a'/%3E%3Cpath fill='%2393c5fd' d='M12 9v14l10-7z'/%3E%3Cpath fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-linecap='round' d='M20 11c2 0 3 1.5 3 3s-1 3-3 3m0-6c3 0 5 2 5 5s-2 5-5 5'/%3E%3C/svg%3E">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-        }
+        body { font-family: 'Inter', sans-serif; }
+        .chunk-row.now-playing { background-color: rgba(30, 58, 138, 0.5); border-left: 4px solid rgb(96, 165, 250); box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5); }
+        .chunk-row.now-playing .chunk-name { color: #fff; font-weight: 700; }
+        .chunk-row.now-playing td { color: rgb(209, 213, 219); font-weight: 600; }
+        .audio-row.now-playing-audio { background-color: rgba(30, 58, 138, 0.5); border-left: 4px solid rgb(96, 165, 250); box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5); }
+        .audio-row.now-playing-audio .audio-name { color: #fff; font-weight: 700; }
     </style>
 </head>
 
@@ -24,14 +28,14 @@
             </div>
             <div class="flex gap-4">
                 <a href="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8" target="_blank"
-                    class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow transition">▶ Watch
+class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition">▶ Watch
                     Stream</a>
                 <button id="btn-generate"
-                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow transition font-medium whitespace-nowrap">Generate
-                    Chunks</button>
+                    class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition font-medium whitespace-nowrap">Generate
+                                    Chunks</button>
                 <button id="btn-status"
-                    class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded shadow transition whitespace-nowrap">Server
-                    Status</button>
+                    class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition whitespace-nowrap">Server
+                                    Status</button>
             </div>
         </header>
 
@@ -45,11 +49,12 @@
             <!-- Left Column: Chunks -->
             <div class="lg:col-span-2 space-y-6">
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden">
-                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center flex-wrap gap-2">
                         <h2 class="text-xl font-semibold text-white">Generated Video Chunks</h2>
-                        <span
-                            class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{
-                            chunks|length }} Chunks</span>
+                        <div class="flex items-center gap-2">
+                            <button type="button" id="btn-skip-next" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm font-medium whitespace-nowrap">Play next</button>
+                            <span class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{ chunks|length }} Chunks</span>
+                        </div>
                     </div>
                     <div class="p-0 overflow-x-auto">
                         <table class="w-full text-left border-collapse">
@@ -69,25 +74,27 @@
                                         Status</th>
                                 </tr>
                             </thead>
-                            <tbody class="divide-y divide-gray-700">
+                            <tbody class="divide-y divide-gray-700" id="chunks-tbody">
                                 {% for chunk in chunks %}
-                                <tr
-                                    class="transition duration-150 {% if chunk.name == current_chunk %}bg-blue-900/40 border-l-4 border-blue-500 shadow-md{% else %}hover:bg-gray-700/50{% endif %}">
-                                    <td
-                                        class="py-3 px-6 text-sm {% if chunk.name == current_chunk %}text-white font-bold{% else %}text-gray-300{% endif %}">
-                                        {{ chunk.name }}
-                                        {% if chunk.name == current_chunk %}
-                                        <span
-                                            class="ml-2 inline-block bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-[0_0_10px_rgba(37,99,235,0.8)] animate-pulse">Now
-                                            Streaming &#9654;</span>
-                                        {% endif %}
+                                <tr data-page="{{ ((loop.index0) // 10) + 1 }}" data-chunk-name="{{ chunk.name }}"
+                                    class="chunk-row transition duration-150 {% if chunk.name == current_chunk %}now-playing{% else %}hover:bg-gray-700/50{% endif %}">
+                                    <td class="py-3 px-6 text-sm {% if chunk.name != current_chunk %}text-gray-300{% endif %}">
+                                        <div class="flex items-center gap-2 flex-wrap">
+                                            <a href="/chunks/{{ chunk.name }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a>
+                                            <span class="chunk-name">{{ chunk.name }}</span>
+                                            {% if chunk.name == current_chunk %}
+                                            <span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>
+                                            {% endif %}
+                                        </div>
+                                        <div class="now-playing-progress mt-1.5 hidden">
+                                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs">
+                                                <div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div>
+                                            </div>
+                                            <span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span>
+                                        </div>
                                     </td>
-                                    <td
-                                        class="py-3 px-6 text-sm {% if chunk.name == current_chunk %}text-gray-300 font-semibold{% else %}text-gray-400{% endif %}">
-                                        {{ chunk.created_at }}</td>
-                                    <td
-                                        class="py-3 px-6 text-sm {% if chunk.name == current_chunk %}text-gray-300 font-semibold{% else %}text-gray-400{% endif %}">
-                                        {{ chunk.size_mb }} MB</td>
+                                    <td class="py-3 px-6 text-sm text-gray-400">{{ chunk.created_at }}</td>
+                                    <td class="py-3 px-6 text-sm text-gray-400">{{ chunk.size_mb }} MB</td>
                                     <td class="py-3 px-6 text-sm text-right">
                                         <span
                                             class="text-orange-400 bg-orange-400/10 border-orange-400/20 text-xs px-2 py-1 rounded border">
@@ -100,67 +107,71 @@
                                     <td colspan="4" class="py-8 text-center text-gray-500">No chunks found in the chunks
                                         folder.</td>
                                 </tr>
-                                <!-- End For Loop -->
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% if chunks %}
+                    <div id="chunks-pagination" class="px-6 py-3 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap">
+                        <span class="text-sm text-gray-400">Page <span id="page-current">1</span> of <span id="page-total">{{ ((chunks|length + 9) // 10) }}</span></span>
+                        <div class="flex gap-1">
+                            <button type="button" id="btn-prev" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
+                            <span id="page-buttons" class="flex gap-1 flex-wrap justify-center"></span>
+                            <button type="button" id="btn-next" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Audio files (below chunks) -->
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6">
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
+                        <h2 class="text-xl font-semibold text-white">Audio Files</h2>
+                        <span class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{ audio_files|length }} files</span>
+                    </div>
+                    <div class="p-0 overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-700/50">
+                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Filename</th>
+                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700 text-right">Size (MB)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-700" id="audio-tbody">
+                                {% for af in audio_files %}
+                                <tr data-audio-name="{{ af.name }}" class="audio-row transition duration-150 {% if af.name == current_audio %}now-playing-audio{% else %}hover:bg-gray-700/50{% endif %}">
+                                    <td class="py-3 px-6 text-sm {% if af.name != current_audio %}text-gray-300{% endif %}">
+                                        <span class="audio-name">{{ af.name }}</span>
+                                        {% if af.name == current_audio %}
+                                        <span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span>
+                                        {% endif %}
+                                        <div class="audio-progress mt-1.5 hidden">
+                                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs">
+                                                <div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div>
+                                            </div>
+                                            <span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span>
+                                        </div>
+                                    </td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 text-right">{{ af.size_mb }} MB</td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="2" class="py-6 text-center text-gray-500">No audio files found. Set AUDIO_FOLDER in .env to add background music.</td>
+                                </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
                     </div>
                 </div>
-
-                <!-- System Information (Moved to Left Column) -->
-                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6 mt-6">
-                    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">System Information</h3>
-                    <ul class="space-y-4 text-sm text-gray-300 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2">
-                        <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">OS (Container)</span>
-                            <span class="font-mono text-right max-w-[60%]">{{ sys_info.os }} {% if sys_info.docker ==
-                                'Yes' %}(Docker){% endif %}</span>
-                        </li>
-                        <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">CPU Cores (Container)</span>
-                            <span class="font-mono">{{ sys_info.cpu_cores }}</span>
-                        </li>
-                        <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">Hardware Accel</span>
-                            <span class="font-mono">{% if sys_info.hw_accel == 'nvidia' %}<span
-                                    class="text-green-400">NVIDIA GPU</span>{% else %}None (CPU){% endif %}</span>
-                        </li>
-                        <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">Port</span>
-                            <span class="font-mono">{{ settings.get('PORT', '8080') }}</span>
-                        </li>
-                        <li class="flex justify-between border-b border-gray-700 pb-2 md:col-span-2">
-                            <span class="text-gray-500 flex-shrink-0 mr-4">Video Folder</span>
-                            <span class="font-mono break-all text-right">{{ settings.get('VIDEO_FOLDER', '/videos')
-                                }}</span>
-                        </li>
-                        <li class="flex justify-between pb-1 md:col-span-2">
-                            <span class="text-gray-500 flex-shrink-0 mr-4">Audio Folder</span>
-                            <span class="font-mono break-all text-right">{{ settings.get('AUDIO_FOLDER', '(none)')
-                                }}</span>
-                        </li>
-                    </ul>
-                </div>
             </div>
 
-            <!-- Right Column: Settings -->
+            <!-- Right Column: Settings + System Information -->
             <div class="space-y-6">
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700">
                     <div class="px-6 py-4 border-b border-gray-700 bg-gray-800">
                         <h2 class="text-xl font-semibold text-white">Server Configuration</h2>
                     </div>
                     <div class="p-6">
-                        <div class="bg-blue-900/20 border border-blue-800 rounded p-4 mb-6">
-                            <p class="text-sm text-blue-200">
-                                <strong class="text-blue-100">Read-only Configuration.</strong> Settings are loaded from
-                                the <code class="bg-gray-800 px-1 rounded border border-gray-700">.env</code> file. To
-                                modify: edit the <code
-                                    class="bg-gray-800 px-1 rounded border border-gray-700">.env</code> file directly on
-                                the host server and run <code
-                                    class="bg-gray-800 px-1 py-0.5 rounded text-xs select-all whitespace-nowrap border border-gray-700 text-blue-100 hover:text-white transition">docker compose down && docker compose up -d</code>
-                                to apply changes.
-                            </p>
-                        </div>
                         <div class="space-y-4">
                             <div>
                                 <label class="block text-sm font-medium text-gray-400 mb-1">Max Chunks to Keep</label>
@@ -196,13 +207,270 @@
                                     class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
                             </div>
                         </div>
+                        <div class="mt-6 pt-4 border-t border-gray-700">
+                            <p class="text-sm text-gray-400">
+                                <strong class="text-gray-300">Read-only.</strong> Settings are loaded from the
+                                <code class="bg-gray-900 px-1 rounded border border-gray-700">.env</code> file. To change:
+                                edit <code class="bg-gray-900 px-1 rounded border border-gray-700">.env</code> on the host
+                                and restart <code class="text-xs select-all whitespace-nowrap border border-gray-600 rounded px-1 py-0.5">the server</code>.
+                            </p>
+                        </div>
                     </div>
+                </div>
+
+                <!-- System Information -->
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+                    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">System Information</h3>
+                    <ul class="space-y-4 text-sm text-gray-300 grid grid-cols-1 gap-x-8 gap-y-2">
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">OS (Container)</span>
+                            <span class="font-mono text-right max-w-[60%]">{{ sys_info.os }} {% if sys_info.docker == 'Yes' %}(Docker){% endif %}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">CPU Cores</span>
+                            <span class="font-mono">{{ sys_info.cpu_cores }}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Memory</span>
+                            <span class="font-mono text-right">
+                                {% if sys_info.mem_total_mb is not none and sys_info.mem_available_mb is not none and sys_info.mem_total_mb > 0 %}
+                                {% set used = (sys_info.mem_total_mb - sys_info.mem_available_mb) | int %}
+                                {% set total = sys_info.mem_total_mb | int %}
+                                {% if total >= 1024 %}{{ "%.1f"|format(used / 1024) }} GB / {{ "%.1f"|format(total / 1024) }} GB
+                                {% else %}{{ used }} MB / {{ total }} MB{% endif %}
+                                {% else %}—{% endif %}
+                            </span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Chunks disk</span>
+                            <span class="font-mono">
+                                {% if sys_info.chunks_total_mb >= 1024 %}{{ "%.1f"|format(sys_info.chunks_total_mb / 1024) }} GB
+                                {% else %}{{ sys_info.chunks_total_mb }} MB{% endif %}
+                                ({{ sys_info.chunks_count }} chunks)
+                            </span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Hardware Accel</span>
+                            <span class="font-mono">{% if sys_info.hw_accel == 'nvidia' %}<span class="text-green-400">NVIDIA GPU</span>{% else %}None (CPU){% endif %}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Port</span>
+                            <span class="font-mono">{{ settings.get('PORT', '8080') }}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500 flex-shrink-0 mr-4">Video Folder</span>
+                            <span class="font-mono break-all text-right">{{ settings.get('VIDEO_FOLDER', '/videos') }}</span>
+                        </li>
+                        <li class="flex justify-between pb-1">
+                            <span class="text-gray-500 flex-shrink-0 mr-4">Audio Folder</span>
+                            <span class="font-mono break-all text-right">{{ settings.get('AUDIO_FOLDER', '(none)') }}</span>
+                        </li>
+                    </ul>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
+        (function () {
+            const CHUNKS_PER_PAGE = 10;
+            const tbody = document.getElementById('chunks-tbody');
+            const rows = tbody ? Array.from(tbody.querySelectorAll('tr.chunk-row')) : [];
+            const totalPages = document.getElementById('page-total');
+            const total = totalPages ? parseInt(totalPages.textContent, 10) : 1;
+            let currentPage = 1;
+
+            function showPage(page) {
+                currentPage = Math.max(1, Math.min(page, total));
+                rows.forEach(function (tr) {
+                    var p = parseInt(tr.getAttribute('data-page'), 10);
+                    tr.style.display = p === currentPage ? '' : 'none';
+                });
+                var curEl = document.getElementById('page-current');
+                if (curEl) curEl.textContent = currentPage;
+                document.getElementById('btn-prev').disabled = currentPage <= 1;
+                document.getElementById('btn-next').disabled = currentPage >= total;
+                // Update page number buttons
+                var container = document.getElementById('page-buttons');
+                if (container) {
+                    container.innerHTML = '';
+                    for (var i = 1; i <= total; i++) {
+                        var btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = 'w-8 h-8 rounded text-sm ' + (i === currentPage ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600');
+                        btn.textContent = i;
+                        btn.addEventListener('click', function () { showPage(parseInt(this.textContent, 10)); });
+                        container.appendChild(btn);
+                    }
+                }
+            }
+
+            function fmtTime(sec) {
+                if (sec == null || isNaN(sec) || sec < 0) return '0:00';
+                var m = Math.floor(sec / 60);
+                var s = Math.floor(sec % 60);
+                return m + ':' + (s < 10 ? '0' : '') + s;
+            }
+
+            function updateNowPlaying(chunkName, startedAt, duration) {
+                    rows.forEach(function (tr) {
+                        tr.classList.remove('now-playing');
+                        tr.removeAttribute('data-chunk-started-at');
+                        tr.removeAttribute('data-chunk-duration');
+                        var firstTd = tr.querySelector('td:first-child');
+                        if (firstTd) {
+                            var badge = firstTd.querySelector('.now-playing-badge');
+                            if (badge) badge.remove();
+                            var prog = firstTd.querySelector('.now-playing-progress');
+                            if (prog) prog.classList.add('hidden');
+                        }
+                    });
+                    if (!chunkName) return;
+                    var playingRow = rows.find(function (tr) { return tr.getAttribute('data-chunk-name') === chunkName; });
+                    if (playingRow) {
+                        playingRow.classList.add('now-playing');
+                        if (startedAt != null && duration != null && duration > 0) {
+                            playingRow.setAttribute('data-chunk-started-at', startedAt);
+                            playingRow.setAttribute('data-chunk-duration', duration);
+                        }
+                        var td = playingRow.querySelector('td:first-child');
+                        if (td) {
+                            var span = document.createElement('span');
+                            span.className = 'ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider';
+                            span.textContent = 'Now Playing \u25B6';
+                            var flex = td.querySelector('.flex');
+                            if (flex) flex.appendChild(span); else td.appendChild(span);
+                            var prog = td.querySelector('.now-playing-progress');
+                            if (prog && startedAt != null && duration != null && duration > 0) prog.classList.remove('hidden');
+                        }
+                        var pageOfRow = parseInt(playingRow.getAttribute('data-page'), 10);
+                        if (pageOfRow !== currentPage) showPage(pageOfRow);
+                        tickProgressBar();
+                    }
+                }
+
+            function updateNowPlayingAudio(audioName, startedAt, duration, audioPositionSec, audioTrackDurationSec) {
+                    var audioTbody = document.getElementById('audio-tbody');
+                    var audioRows = audioTbody ? Array.from(audioTbody.querySelectorAll('tr.audio-row')) : [];
+                    audioRows.forEach(function (tr) {
+                        tr.classList.remove('now-playing-audio');
+                        tr.removeAttribute('data-chunk-started-at');
+                        tr.removeAttribute('data-chunk-duration');
+                        tr.removeAttribute('data-audio-position');
+                        tr.removeAttribute('data-audio-duration');
+                        tr.removeAttribute('data-audio-position-as-of');
+                        var td = tr.querySelector('td:first-child');
+                        if (td) {
+                            var badge = td.querySelector('.now-playing-audio-badge');
+                            if (badge) badge.remove();
+                            var prog = td.querySelector('.audio-progress');
+                            if (prog) prog.classList.add('hidden');
+                        }
+                    });
+                    if (!audioName) return;
+                    var playingAudioRow = audioRows.find(function (tr) { return tr.getAttribute('data-audio-name') === audioName; });
+                    if (playingAudioRow) {
+                        playingAudioRow.classList.add('now-playing-audio');
+                        if (startedAt != null && duration != null && duration > 0) {
+                            playingAudioRow.setAttribute('data-chunk-started-at', startedAt);
+                            playingAudioRow.setAttribute('data-chunk-duration', duration);
+                        }
+                        if (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0) {
+                            playingAudioRow.setAttribute('data-audio-position', String(audioPositionSec));
+                            playingAudioRow.setAttribute('data-audio-duration', String(audioTrackDurationSec));
+                            playingAudioRow.setAttribute('data-audio-position-as-of', String(Date.now() / 1000));
+                        }
+                        var td = playingAudioRow.querySelector('td:first-child');
+                        if (td) {
+                            var span = document.createElement('span');
+                            span.className = 'ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider';
+                            span.textContent = 'Now Playing';
+                            td.appendChild(span);
+                            var prog = td.querySelector('.audio-progress');
+                            var showProg = (startedAt != null && duration != null && duration > 0) || (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0);
+                            if (prog && showProg) prog.classList.remove('hidden');
+                        }
+                    }
+                }
+
+                function tickProgressBar() {
+                    var playingRow = document.querySelector('.chunk-row.now-playing');
+                    if (playingRow) {
+                        var startedAt = parseFloat(playingRow.getAttribute('data-chunk-started-at'));
+                        var duration = parseFloat(playingRow.getAttribute('data-chunk-duration'));
+                        if (!isNaN(startedAt) && !isNaN(duration) && duration > 0) {
+                            var now = Date.now() / 1000;
+                            var elapsed = Math.max(0, now - startedAt);
+                            var pct = Math.min(100, (elapsed / duration) * 100);
+                            var bar = playingRow.querySelector('.chunk-progress-bar');
+                            var label = playingRow.querySelector('.chunk-progress-label');
+                            if (bar) bar.style.width = pct + '%';
+                            if (label) label.textContent = fmtTime(elapsed) + ' / ' + fmtTime(duration);
+                        }
+                    }
+                    var playingAudioRow = document.querySelector('.audio-row.now-playing-audio');
+                    if (playingAudioRow) {
+                        var audioPos = parseFloat(playingAudioRow.getAttribute('data-audio-position'));
+                        var audioDur = parseFloat(playingAudioRow.getAttribute('data-audio-duration'));
+                        var audioPosAsOf = parseFloat(playingAudioRow.getAttribute('data-audio-position-as-of'));
+                        if (!isNaN(audioPos) && !isNaN(audioDur) && audioDur > 0 && !isNaN(audioPosAsOf)) {
+                            var now = Date.now() / 1000;
+                            var elapsed = Math.max(0, now - audioPosAsOf);
+                            var position = (audioPos + elapsed) % audioDur;
+                            var pct = Math.min(100, (position / audioDur) * 100);
+                            var bar = playingAudioRow.querySelector('.audio-progress-bar');
+                            var label = playingAudioRow.querySelector('.audio-progress-label');
+                            if (bar) bar.style.width = pct + '%';
+                            if (label) label.textContent = fmtTime(position) + ' / ' + fmtTime(audioDur);
+                        } else {
+                            var startedAt = parseFloat(playingAudioRow.getAttribute('data-chunk-started-at'));
+                            var duration = parseFloat(playingAudioRow.getAttribute('data-chunk-duration'));
+                            if (!isNaN(startedAt) && !isNaN(duration) && duration > 0) {
+                                var now = Date.now() / 1000;
+                                var elapsed = Math.max(0, now - startedAt);
+                                var pct = Math.min(100, (elapsed / duration) * 100);
+                                var bar = playingAudioRow.querySelector('.audio-progress-bar');
+                                var label = playingAudioRow.querySelector('.audio-progress-label');
+                                if (bar) bar.style.width = pct + '%';
+                                if (label) label.textContent = fmtTime(elapsed) + ' / ' + fmtTime(duration);
+                            }
+                        }
+                    }
+                }
+
+                function pollCurrentChunk() {
+                    fetch('/api/stream-status').then(function (r) { return r.json(); }).then(function (data) {
+                        var name = data.current_chunk || '';
+                        var startedAt = data.current_chunk_started_at != null ? data.current_chunk_started_at : null;
+                        var duration = data.current_chunk_duration != null ? data.current_chunk_duration : null;
+                        if (name) updateNowPlaying(name, startedAt, duration);
+                        var audioName = data.current_audio || '';
+                        var audioPos = data.audio_position_sec != null ? data.audio_position_sec : null;
+                        var audioTrackDur = data.audio_track_duration_sec != null ? data.audio_track_duration_sec : null;
+                        if (audioName) updateNowPlayingAudio(audioName, startedAt, duration, audioPos, audioTrackDur);
+                    }).catch(function () {});
+                }
+            if (rows.length > 0 && total >= 1) {
+                var currentChunkName = {{ (current_chunk or '')|tojson }};
+                var currentChunkRow = currentChunkName ? rows.find(function (tr) { return tr.getAttribute('data-chunk-name') === currentChunkName; }) : null;
+                if (currentChunkRow) {
+                    var pageOfCurrent = parseInt(currentChunkRow.getAttribute('data-page'), 10);
+                    currentPage = pageOfCurrent;
+                }
+                showPage(currentPage);
+                document.getElementById('btn-prev').addEventListener('click', function () { showPage(currentPage - 1); });
+                document.getElementById('btn-next').addEventListener('click', function () { showPage(currentPage + 1); });
+            }
+
+                var initial = {{ (initial_stream_status or {}) | tojson }};
+                if (initial.current_chunk) updateNowPlaying(initial.current_chunk, initial.current_chunk_started_at, initial.current_chunk_duration);
+                if (initial.current_audio) updateNowPlayingAudio(initial.current_audio, initial.current_chunk_started_at, initial.current_chunk_duration, initial.audio_position_sec, initial.audio_track_duration_sec);
+                pollCurrentChunk();
+            setInterval(pollCurrentChunk, 4000);
+            setInterval(tickProgressBar, 1000);
+            setTimeout(tickProgressBar, 200);
+        })();
+
         document.getElementById('btn-status').addEventListener('click', async () => {
             const container = document.getElementById('status-panel-container');
             const content = document.getElementById('status-content');
@@ -225,30 +493,88 @@
             }
         });
 
-        document.getElementById('btn-generate').addEventListener('click', async () => {
+        (function () {
             const btn = document.getElementById('btn-generate');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = 'Triggering...';
-            btn.disabled = true;
+            const defaultHtml = 'Generate Chunks';
 
-            try {
-                const response = await fetch('/api/generate_chunk', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    btn.innerHTML = 'Generation Triggered!';
-                    btn.classList.replace('bg-green-600', 'bg-blue-600');
-                    btn.classList.replace('hover:bg-green-700', 'hover:bg-blue-700');
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 2000);
+            function setGenerateButton(inProgress, text) {
+                btn.disabled = inProgress;
+                btn.innerHTML = text || defaultHtml;
+                if (inProgress) {
+                    btn.classList.remove('bg-indigo-900', 'hover:bg-indigo-700', 'text-indigo-200');
+                    btn.classList.add('bg-gray-600', 'cursor-not-allowed', 'text-white');
                 } else {
-                    alert('Error: ' + data.error);
-                    btn.innerHTML = originalText;
+                    btn.classList.remove('bg-gray-600', 'cursor-not-allowed', 'text-white');
+                    btn.classList.add('bg-indigo-900', 'hover:bg-indigo-700', 'text-indigo-200');
+                }
+            }
+
+            setInterval(function () {
+                fetch('/api/status').then(function (r) { return r.json(); }).then(function (data) {
+                    if (data.generation_in_progress) setGenerateButton(true, 'Generation in progress…');
+                    else setGenerateButton(false, defaultHtml);
+                }).catch(function () {});
+            }, 8000);
+            fetch('/api/status').then(function (r) { return r.json(); }).then(function (data) {
+                if (data.generation_in_progress) setGenerateButton(true, 'Generation in progress…');
+            }).catch(function () {});
+
+            btn.addEventListener('click', async () => {
+                if (btn.disabled) return;
+                var confirmed = confirm(
+                    'Chunk generation will use significant CPU or GPU (depending on your setup) and system resources while it runs.\n\nContinue?'
+                );
+                if (!confirmed) return;
+
+                btn.innerHTML = 'Triggering...';
+                btn.disabled = true;
+
+                try {
+                    const response = await fetch('/api/generate_chunk', { method: 'POST' });
+                    const data = await response.json();
+                    if (response.status === 409) {
+                        alert(data.error || 'Chunk generation is already running.');
+                        setGenerateButton(false, defaultHtml);
+                        return;
+                    }
+                    if (data.success) {
+                        btn.innerHTML = 'Generation Triggered!';
+                        btn.classList.remove('bg-gray-600', 'cursor-not-allowed');
+                        btn.classList.add('bg-indigo-900', 'hover:bg-indigo-700', 'text-indigo-200');
+                        setTimeout(() => window.location.reload(), 2000);
+                    } else {
+                        alert('Error: ' + (data.error || 'Unknown error'));
+                        setGenerateButton(false, defaultHtml);
+                    }
+                } catch (error) {
+                    alert('Error triggering generation: ' + error.message);
+                    setGenerateButton(false, defaultHtml);
+                }
+            });
+        })();
+
+        document.getElementById('btn-skip-next').addEventListener('click', async () => {
+            const btn = document.getElementById('btn-skip-next');
+            const orig = btn.textContent;
+            btn.textContent = '…';
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/skip_to_next', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    if (data.skipped) {
+                        btn.textContent = 'Next';
+                        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+                    } else {
+                        btn.textContent = orig;
+                        btn.disabled = false;
+                    }
+                } else {
+                    btn.textContent = orig;
                     btn.disabled = false;
                 }
-            } catch (error) {
-                alert('Error triggering generation: ' + error.message);
-                btn.innerHTML = originalText;
+            } catch (e) {
+                btn.textContent = orig;
                 btn.disabled = false;
             }
         });

@@ -1,0 +1,17 @@
+# Don't copy these into the image (avoids chown I/O errors and keeps image small)
+.git
+.env
+.tmp
+tmp
+audio
+chunks
+videos
+data
+.deploy
+deploy
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+*.log
+*.db

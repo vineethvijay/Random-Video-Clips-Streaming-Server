@@ -42,7 +42,12 @@ class ClipPusher:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._current_chunk  = None
+        self._current_chunk_started_at: Optional[float] = None
+        self._current_chunk_duration: Optional[float] = None
         self._current_audio  = None
+        self._persistent_audio_path: Optional[str] = None  # same track across chunks
+        self._persistent_audio_duration: Optional[float] = None  # seconds
+        self._audio_position: float = 0.0  # position within track (0..duration), so next chunk continues from here
         self._chunks_pushed  = 0
         self._errors         = 0
         self._last_error: Optional[str] = None
@@ -88,15 +93,36 @@ class ClipPusher:
 
     def get_status(self) -> dict:
         return {
-            'running':           self._running,
-            'rtmp_url':          self.rtmp_url,
-            'chunks_pushed':     self._chunks_pushed,
-            'audio_files_found': len(self._audio_files),
-            'current_audio':     self._current_audio,
-            'errors':            self._errors,
-            'last_error':        self._last_error,
-            'current_chunk':     self._current_chunk,
+            'running':                   self._running,
+            'rtmp_url':                  self.rtmp_url,
+            'chunks_pushed':             self._chunks_pushed,
+            'audio_files_found':        len(self._audio_files),
+            'current_audio':             self._current_audio,
+            'audio_position_sec':        round(self._audio_position, 1) if self._persistent_audio_duration else None,
+            'audio_track_duration_sec':  round(self._persistent_audio_duration, 1) if self._persistent_audio_duration else None,
+            'errors':                    self._errors,
+            'last_error':                self._last_error,
+            'current_chunk':             self._current_chunk,
+            'current_chunk_started_at': self._current_chunk_started_at,
+            'current_chunk_duration':    self._current_chunk_duration,
         }
+
+    def skip_to_next(self) -> bool:
+        """Stop the current chunk so the loop advances to the next one. Returns True if a stream was running."""
+        if self._streamer_process and self._streamer_process.poll() is None:
+            # Advance audio position by how long this chunk actually played, so next chunk continues from there
+            if self._current_chunk_started_at and self._persistent_audio_duration and self._persistent_audio_duration > 0:
+                actual = time.time() - self._current_chunk_started_at
+                self._audio_position = (self._audio_position + actual) % self._persistent_audio_duration
+            try:
+                self._streamer_process.terminate()
+                self._streamer_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._streamer_process.kill()
+            except Exception:
+                pass
+            return True
+        return False
 
     # ── Internal ──────────────────────────────────────────────────
 
@@ -108,48 +134,64 @@ class ClipPusher:
         self._current_audio = os.path.basename(audio)
         return audio
 
-    def _stream_chunk(self, chunk_path: str):
+    def _stream_chunk(self, chunk_path: str, audio_start_sec: float = 0.0):
         """
         Stream a single chunk to RTMP with background audio.
-        Since the chunks are pre-normalized, we can use -c:v copy.
+        audio_start_sec = position in track so playback continues across chunks.
+        We use concat filter: [audio from start_sec to end] + [audio looped from 0] so the seek is respected.
         """
-        audio_file = self._get_audio_file()
+        audio_file = self._persistent_audio_path
+        seek_sec = round(audio_start_sec, 2) if audio_start_sec > 0.01 else 0.0
 
         cmd = [
-            'ffmpeg', '-y', 
+            'ffmpeg', '-y',
             '-hide_banner', '-nostats', '-loglevel', 'warning',
-            
-            # ── Video chunk input ──
-            '-re',                      # real-time pacing
+
+            # Input 0: video chunk
+            '-re',
             '-i', chunk_path,
         ]
 
-        # ── Audio input ──
         if audio_file:
-            cmd.extend([
-                '-stream_loop', '-1',   # loop audio forever alongside video
-                '-i', audio_file,
-            ])
-            map_args = ['-map', '0:v:0', '-map', '1:a:0']
+            # Input 1: audio from seek_sec to end (once). Input 2: same file looped from 0.
+            # Concat gives: [position..end] then [0..end, 0..end, ...] = continuous from position.
+            if seek_sec > 0:
+                cmd.extend([
+                    '-ss', str(seek_sec),
+                    '-i', audio_file,
+                    '-stream_loop', '-1',
+                    '-i', audio_file,
+                ])
+                # [1:a] = tail from seek, [2:a] = full loop; concat so we start at position then loop
+                cmd.extend([
+                    '-filter_complex', '[1:a][2:a]concat=n=2:v=0:a=1[a]',
+                    '-map', '0:v:0', '-map', '[a]',
+                ])
+            else:
+                cmd.extend([
+                    '-stream_loop', '-1',
+                    '-i', audio_file,
+                ])
+                cmd.extend(['-map', '0:v:0', '-map', '1:a:0'])
         else:
-            # Silent audio fallback
             cmd.extend([
                 '-f', 'lavfi',
                 '-i', f'anullsrc=channel_layout=stereo:sample_rate={OUTPUT_AUDIO_RATE}',
             ])
-            map_args = ['-map', '0:v:0', '-map', '1:a:0']
+            cmd.extend(['-map', '0:v:0', '-map', '1:a:0'])
             
         # Determine chunk duration to stop audio properly
         duration_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', chunk_path]
         try:
             chunk_duration = float(subprocess.check_output(duration_cmd).decode('utf-8').strip())
+            self._current_chunk_duration = chunk_duration
             # Add a tiny buffer so it definitely reaches the end of the video
             chunk_duration += 0.5
         except Exception:
-            chunk_duration = 300 # Fallback 5 mins
+            chunk_duration = 300  # Fallback 5 mins
+            self._current_chunk_duration = 300.0
 
         cmd.extend([
-            *map_args,
             '-c:v', 'copy',             # remux H264 natively, zero CPU!
             '-c:a', 'aac',
             '-ar', str(OUTPUT_AUDIO_RATE),
@@ -161,18 +203,27 @@ class ClipPusher:
             self.rtmp_url,
         ])
 
-        print(f"Streaming chunk: {os.path.basename(chunk_path)} → {self.rtmp_url}")
+        print(f"Streaming chunk: {os.path.basename(chunk_path)} → {self.rtmp_url}" + (f" (audio from {seek_sec}s)" if seek_sec > 0 and audio_file else ""))
         
         self._streamer_process = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
 
         while self._running and self._streamer_process.poll() is None:
             time.sleep(1)
+
+        stderr_out = None
+        if self._streamer_process.stderr:
+            try:
+                stderr_out = self._streamer_process.stderr.read().decode('utf-8', errors='replace')
+            except Exception:
+                pass
             
         if self._running and self._streamer_process.poll() is not None:
             if self._streamer_process.returncode != 0:
                 print(f"Streamer process exited with code {self._streamer_process.returncode}")
+                if stderr_out:
+                    print(f"ffmpeg stderr: {stderr_out[:500]}")
                 self._errors += 1
             self._chunks_pushed += 1
 
@@ -193,19 +244,49 @@ class ClipPusher:
                 continue
                 
             random.shuffle(chunks)
-            
+
+            # Pick one audio track for the whole round; get duration so we can resume position across chunks
+            if self._audio_files:
+                if self._persistent_audio_path is None or not os.path.isfile(self._persistent_audio_path):
+                    self._persistent_audio_path = self._get_audio_file()
+                    self._current_audio = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
+                    self._audio_position = 0.0
+                    if self._persistent_audio_path:
+                        try:
+                            out = subprocess.check_output(
+                                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                                 '-of', 'default=noprint_wrappers=1:nokey=1', self._persistent_audio_path]
+                            )
+                            self._persistent_audio_duration = float(out.decode('utf-8').strip())
+                        except Exception as e:
+                            # If we can't get duration, position would never advance (always 0). Use fallback.
+                            self._persistent_audio_duration = 3600.0
+                            print(f"Warning: ffprobe duration failed for {self._persistent_audio_path}: {e}. Using 3600s fallback.")
+
             for chunk in chunks:
                 if not self._running:
                     break
                 
                 self._current_chunk = os.path.basename(chunk)
+                self._current_chunk_started_at = time.time()
+                self._current_chunk_duration = None  # set in _stream_chunk after ffprobe
+                audio_start = self._audio_position
+                if audio_start > 0 and self._persistent_audio_duration:
+                    print(f"Resuming audio at {audio_start:.1f}s / {self._persistent_audio_duration:.1f}s")
                 try:
-                    self._stream_chunk(chunk)
+                    self._stream_chunk(chunk, audio_start_sec=audio_start)
                 except Exception as exc:
                     self._last_error = str(exc)
                     self._errors += 1
                     print(f"Stream loop error: {exc}")
                     time.sleep(5)
+                # Advance by how much audio we actually output (chunk duration if it ran to completion, else wall clock)
+                if self._persistent_audio_duration and self._persistent_audio_duration > 0:
+                    if self._current_chunk_duration is not None and self._streamer_process and self._streamer_process.returncode == 0:
+                        advance = self._current_chunk_duration
+                    else:
+                        advance = time.time() - self._current_chunk_started_at
+                    self._audio_position = (self._audio_position + advance) % self._persistent_audio_duration
                     
                 # Cleanup process before next iteration
                 if self._streamer_process and self._streamer_process.poll() is None:

@@ -8,7 +8,7 @@ Pushes pre-generated chunks to RTMP server for continuous live streaming
 import os
 import signal
 import sys
-from flask import Flask, jsonify, request, Response, render_template
+from flask import Flask, jsonify, request, Response, render_template, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 
@@ -65,6 +65,27 @@ def index():
     # Sort chunks by oldest first (since they get pruned first)
     chunks.sort(key=lambda x: x['timestamp'])
 
+    # List audio files (same extensions as clip_pusher)
+    audio_files = []
+    audio_extensions = ('.mp3', '.aac', '.flac', '.ogg', '.wav', '.m4a')
+    if AUDIO_FOLDER and os.path.isdir(AUDIO_FOLDER):
+        for root, _dirs, files in os.walk(AUDIO_FOLDER):
+            for f in files:
+                lower = f.lower()
+                if any(lower.endswith(ext) for ext in audio_extensions):
+                    path = os.path.join(root, f)
+                    try:
+                        stat = os.stat(path)
+                        audio_files.append({
+                            'name': os.path.basename(path),
+                            'size_mb': round(stat.st_size / (1024 * 1024), 2)
+                        })
+                    except OSError:
+                        pass
+        audio_files.sort(key=lambda x: x['name'].lower())
+
+    current_audio = current_status.get('current_audio')
+
     # Parse .env settings explicitly for the UI to display/edit
     settings = {}
     env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -90,7 +111,7 @@ def index():
     # Gather System Information
     import platform
     import multiprocessing
-    
+
     os_info = platform.system() + " " + platform.release()
     if os.path.exists('/etc/os-release'):
         with open('/etc/os-release', 'r') as f:
@@ -98,22 +119,54 @@ def index():
                 if line.startswith('PRETTY_NAME='):
                     os_info = line.split('=', 1)[1].strip().strip('"')
                     break
-                    
+
     is_docker = os.path.exists('/.dockerenv')
-    
+
     try:
         cpu_count = multiprocessing.cpu_count()
     except NotImplementedError:
         cpu_count = 1
-        
+
+    # Memory (Linux /proc/meminfo; in Docker this is container view)
+    mem_total_mb = None
+    mem_available_mb = None
+    if os.path.exists('/proc/meminfo'):
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    if line.startswith('MemTotal:'):
+                        mem_total_mb = int(line.split()[1]) / 1024  # kB -> MB
+                    elif line.startswith('MemAvailable:'):
+                        mem_available_mb = int(line.split()[1]) / 1024
+                    if mem_total_mb is not None and mem_available_mb is not None:
+                        break
+        except (ValueError, OSError):
+            pass
+
+    # Chunks disk usage (sum of current chunk sizes)
+    chunks_total_mb = round(sum(c['size_mb'] for c in chunks), 2) if chunks else 0
+    chunks_count = len(chunks)
+
     sys_info = {
         'os': os_info,
         'docker': 'Yes' if is_docker else 'No',
         'cpu_cores': cpu_count,
-        'hw_accel': settings.get('HW_ACCEL', 'none')
+        'hw_accel': settings.get('HW_ACCEL', 'none'),
+        'mem_total_mb': mem_total_mb,
+        'mem_available_mb': mem_available_mb,
+        'chunks_total_mb': chunks_total_mb,
+        'chunks_count': chunks_count,
     }
 
-    return render_template('dashboard.html', chunks=chunks, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk)
+    initial_stream_status = {
+        'current_chunk': current_status.get('current_chunk'),
+        'current_chunk_started_at': current_status.get('current_chunk_started_at'),
+        'current_chunk_duration': current_status.get('current_chunk_duration'),
+        'current_audio': current_status.get('current_audio'),
+        'audio_position_sec': current_status.get('audio_position_sec'),
+        'audio_track_duration_sec': current_status.get('audio_track_duration_sec'),
+    }
+    return render_template('dashboard.html', chunks=chunks, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status)
 
 
 @app.route('/iptv.m3u')
@@ -141,11 +194,14 @@ def status():
     """Get server status"""
     pusher_status = clip_pusher.get_status()
 
+    generation_in_progress = os.path.exists(os.path.join(CHUNK_FOLDER, '.generation_running'))
+
     status_data = {
         'server': 'running',
         'mode': 'RTMP push (chunked stream)',
         'stream_url': f'http://{request.host.split(":")[0]}:{HLS_PORT}/hls/stream.m3u8',
         'rtmp_pusher': pusher_status,
+        'generation_in_progress': generation_in_progress,
         'config': {
             'chunk_folder': CHUNK_FOLDER,
             'port': EXTERNAL_PORT,
@@ -160,9 +216,33 @@ def stream_status():
     """Get RTMP stream pusher status"""
     return jsonify(clip_pusher.get_status())
 
+@app.route('/api/skip_to_next', methods=['POST'])
+def skip_to_next():
+    """Skip current chunk and advance to the next one."""
+    skipped = clip_pusher.skip_to_next()
+    return jsonify({'success': True, 'skipped': skipped})
+
+@app.route('/chunks/<path:filename>')
+def serve_chunk(filename):
+    """Serve a chunk file for playback in the browser (read-only, safe path)."""
+    if not filename or '..' in filename or '/' in filename or not filename.endswith('.mp4'):
+        return jsonify({'error': 'Invalid filename'}), 400
+    path = os.path.join(CHUNK_FOLDER, filename)
+    if not os.path.abspath(path).startswith(os.path.abspath(CHUNK_FOLDER)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isfile(path):
+        return jsonify({'error': 'Not found'}), 404
+    return send_file(path, mimetype='video/mp4', as_attachment=False)
+
 @app.route('/api/generate_chunk', methods=['POST'])
 def trigger_generation():
     """Trigger the chunk generator container to create new chunks manually"""
+    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
+    if os.path.exists(running_file):
+        return jsonify({
+            'success': False,
+            'error': 'Chunk generation is already running. Please wait for it to finish.'
+        }), 409
     trigger_file = os.path.join(CHUNK_FOLDER, '.trigger_generation')
     try:
         with open(trigger_file, 'w') as f:
@@ -185,10 +265,11 @@ def shutdown_handler(signum, frame):
 signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
-# Start clip pusher when the module loads
-start_clip_pusher()
-
+# Clip pusher is started in the worker via gunicorn post_fork (see gunicorn.conf.py),
+# so API status and the push loop run in the same process. When running as __main__,
+# we start it here before app.run().
 if __name__ == '__main__':
+    start_clip_pusher()
     try:
         print(f"\nStarting server internally on port {PORT}...")
         print(f"External API port exposed mapping: {EXTERNAL_PORT}")
