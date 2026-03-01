@@ -7,6 +7,7 @@
     <title>Random Video Clips Streaming Server</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231e3a8a'/%3E%3Cpath fill='%2393c5fd' d='M12 9v14l10-7z'/%3E%3Cpath fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-linecap='round' d='M20 11c2 0 3 1.5 3 3s-1 3-3 3m0-6c3 0 5 2 5 5s-2 5-5 5'/%3E%3C/svg%3E">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -15,6 +16,11 @@
         .chunk-row.now-playing td { color: rgb(209, 213, 219); font-weight: 600; }
         .audio-row.now-playing-audio { background-color: rgba(30, 58, 138, 0.5); border-left: 4px solid rgb(96, 165, 250); box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5); }
         .audio-row.now-playing-audio .audio-name { color: #fff; font-weight: 700; }
+        #stream-player-card .stream-player-body { overflow: hidden; transition: max-height 0.25s ease-out, opacity 0.2s; }
+        #stream-player-card:not(.collapsed) .stream-player-body { max-height: 80vh; opacity: 1; }
+        #stream-player-card.collapsed .stream-player-body { max-height: 0 !important; opacity: 0; visibility: hidden; padding: 0; margin: 0; border: none; }
+        #stream-player-card .stream-player-toggle { cursor: pointer; user-select: none; }
+        #stream-player-card.collapsed .stream-player-toggle { border-bottom: none; border-radius: 0 0 0.5rem 0.5rem; }
     </style>
 </head>
 
@@ -45,6 +51,22 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
             <pre id="status-content" class="text-sm text-green-400 font-mono"></pre>
         </div>
 
+        <!-- Live stream (HLS.js) – collapsible section, start collapsed -->
+        <section id="stream-player-card" class="mb-8 bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden collapsed" data-hls-url="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8">
+            <div class="stream-player-toggle px-4 py-2.5 border-b border-gray-700 flex items-center justify-between hover:bg-gray-700/50 transition-colors" title="Click to expand or collapse">
+                <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+                    <span class="stream-player-chevron text-gray-400">▶</span>
+                    Live stream
+                </h2>
+                <span id="stream-player-status" class="text-xs text-gray-400">Loading…</span>
+            </div>
+            <div class="stream-player-body">
+                <div class="aspect-video bg-black border-t border-gray-700">
+                    <video id="stream-player" class="w-full h-full" controls playsinline muted></video>
+                </div>
+            </div>
+        </section>
+
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <!-- Left Column: Chunks -->
             <div class="lg:col-span-2 space-y-6">
@@ -69,6 +91,9 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                                     <th
                                         class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">
                                         Size (MB)</th>
+                                    <th
+                                        class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">
+                                        Sources</th>
                                     <th
                                         class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700 text-right">
                                         Status</th>
@@ -95,6 +120,9 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                                     </td>
                                     <td class="py-3 px-6 text-sm text-gray-400">{{ chunk.created_at }}</td>
                                     <td class="py-3 px-6 text-sm text-gray-400">{{ chunk.size_mb }} MB</td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 max-w-[200px]" title="{{ chunk.source_videos | join(', ') if chunk.source_videos else '' }}">
+                                        {% if chunk.source_videos %}<span class="truncate block">{{ (chunk.source_videos | slice(5)) | join(', ') }}{% if (chunk.source_videos | length) > 5 %} +{{ (chunk.source_videos | length) - 5 }}{% endif %}</span>{% else %}—{% endif %}
+                                    </td>
                                     <td class="py-3 px-6 text-sm text-right">
                                         <span
                                             class="text-orange-400 bg-orange-400/10 border-orange-400/20 text-xs px-2 py-1 rounded border">
@@ -104,7 +132,7 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                                 </tr>
                                 {% else %}
                                 <tr>
-                                    <td colspan="4" class="py-8 text-center text-gray-500">No chunks found in the chunks
+                                    <td colspan="5" class="py-8 text-center text-gray-500">No chunks found in the chunks
                                         folder.</td>
                                 </tr>
                                 {% endfor %}
@@ -218,6 +246,25 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                     </div>
                 </div>
 
+                <!-- Stream stats -->
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+                    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Stream Stats</h3>
+                    <ul class="space-y-4 text-sm text-gray-300 grid grid-cols-1 gap-y-2">
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Hours played</span>
+                            <span class="font-mono">{{ stream_stats.hours_played if stream_stats.hours_played is not none else '—' }}</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2">
+                            <span class="text-gray-500">Chunks pushed (this process)</span>
+                            <span class="font-mono">{{ stream_stats.chunks_pushed if stream_stats.chunks_pushed is not none else '—' }}</span>
+                        </li>
+                        <li class="flex justify-between pb-1">
+                            <span class="text-gray-500">Chunks ever created</span>
+                            <span class="font-mono">{{ stream_stats.chunks_created_total if stream_stats.chunks_created_total is not none else '—' }}</span>
+                        </li>
+                    </ul>
+                </div>
+
                 <!-- System Information -->
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
                     <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">System Information</h3>
@@ -227,19 +274,16 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                             <span class="font-mono text-right max-w-[60%]">{{ sys_info.os }} {% if sys_info.docker == 'Yes' %}(Docker){% endif %}</span>
                         </li>
                         <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">CPU Cores</span>
-                            <span class="font-mono">{{ sys_info.cpu_cores }}</span>
+                            <span class="text-gray-500">CPU</span>
+                            <span class="font-mono text-right">{{ sys_info.cpu_cores }} cores · <span id="live-cpu" class="text-cyan-400">—</span></span>
                         </li>
                         <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">Memory</span>
-                            <span class="font-mono text-right">
-                                {% if sys_info.mem_total_mb is not none and sys_info.mem_available_mb is not none and sys_info.mem_total_mb > 0 %}
-                                {% set used = (sys_info.mem_total_mb - sys_info.mem_available_mb) | int %}
-                                {% set total = sys_info.mem_total_mb | int %}
-                                {% if total >= 1024 %}{{ "%.1f"|format(used / 1024) }} GB / {{ "%.1f"|format(total / 1024) }} GB
-                                {% else %}{{ used }} MB / {{ total }} MB{% endif %}
-                                {% else %}—{% endif %}
-                            </span>
+                            <span class="text-gray-500">Memory (live)</span>
+                            <span id="live-mem" class="font-mono text-right">—</span>
+                        </li>
+                        <li class="flex justify-between border-b border-gray-700 pb-2" id="live-gpu-row" style="display: none;">
+                            <span class="text-gray-500">GPU (live)</span>
+                            <span id="live-gpu" class="font-mono">—</span>
                         </li>
                         <li class="flex justify-between border-b border-gray-700 pb-2">
                             <span class="text-gray-500">Chunks disk</span>
@@ -578,6 +622,97 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                 btn.disabled = false;
             }
         });
+
+        // Live stream collapse/expand
+        (function () {
+            const card = document.getElementById('stream-player-card');
+            const toggle = card && card.querySelector('.stream-player-toggle');
+            const chevron = card && card.querySelector('.stream-player-chevron');
+            if (toggle && chevron) {
+                toggle.addEventListener('click', function () {
+                    card.classList.toggle('collapsed');
+                    chevron.textContent = card.classList.contains('collapsed') ? '▶' : '▼';
+                });
+                if (card.classList.contains('collapsed')) chevron.textContent = '▶';
+                else chevron.textContent = '▼';
+            }
+        })();
+
+        // HLS.js live stream player (nginx-rtmp HLS)
+        (function () {
+            const card = document.getElementById('stream-player-card');
+            const video = document.getElementById('stream-player');
+            const statusEl = document.getElementById('stream-player-status');
+            if (!card || !video || !statusEl) return;
+            const streamUrl = card.getAttribute('data-hls-url');
+            if (!streamUrl) return;
+
+            function setStatus(text, isError) {
+                statusEl.textContent = text;
+                statusEl.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400');
+            }
+
+            if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                const hls = new Hls({ enableWorker: true });
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, function () { setStatus('Live'); });
+                hls.on(Hls.Events.ERROR, function (e, data) {
+                    if (data.fatal) {
+                        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setStatus('Network error – is the stream up?', true);
+                        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setStatus('Media error', true);
+                        else setStatus('Error', true);
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = streamUrl;
+                setStatus('Live');
+            } else {
+                setStatus('HLS not supported in this browser', true);
+            }
+        })();
+
+        // Live system usage (CPU, memory, GPU)
+        (function () {
+            const liveCpu = document.getElementById('live-cpu');
+            const liveMem = document.getElementById('live-mem');
+            const liveGpu = document.getElementById('live-gpu');
+            const liveGpuRow = document.getElementById('live-gpu-row');
+            if (!liveCpu && !liveMem) return;
+
+            function fmtMb(mb) {
+                if (mb == null) return '—';
+                return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+            }
+
+            function poll() {
+                fetch('/api/system-usage').then(function (r) { return r.json(); }).then(function (d) {
+                    if (liveCpu) liveCpu.textContent = d.cpu_percent != null ? d.cpu_percent + ' %' : '—';
+                    if (liveMem) {
+                        if (d.mem_percent != null && d.mem_used_mb != null && d.mem_total_mb != null)
+                            liveMem.innerHTML = fmtMb(d.mem_used_mb) + ' / ' + fmtMb(d.mem_total_mb) + ' <span class="text-cyan-400">(' + d.mem_percent + ' %)</span>';
+                        else liveMem.textContent = '—';
+                    }
+                    if (liveGpu && liveGpuRow) {
+                        if (d.gpu_percent != null || d.gpu_mem_used_mb != null) {
+                            liveGpuRow.style.display = '';
+                            var parts = [];
+                            if (d.gpu_percent != null) parts.push(d.gpu_percent + ' %');
+                            if (d.gpu_mem_used_mb != null && d.gpu_mem_total_mb != null)
+                                parts.push(fmtMb(d.gpu_mem_used_mb) + ' / ' + fmtMb(d.gpu_mem_total_mb));
+                            liveGpu.textContent = parts.length ? parts.join(' · ') : '—';
+                        } else liveGpuRow.style.display = 'none';
+                    }
+                }).catch(function () {
+                    if (liveCpu) liveCpu.textContent = '—';
+                    if (liveMem) liveMem.textContent = '—';
+                    if (liveGpu) liveGpu.textContent = '—';
+                });
+            }
+
+            poll();
+            setInterval(poll, 5000);
+        })();
     </script>
 </body>
 

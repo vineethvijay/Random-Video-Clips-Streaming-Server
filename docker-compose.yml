@@ -38,6 +38,7 @@ services:
       - ./generate_chunk.sh:/generate_chunk.sh:ro
       - ${VIDEO_FOLDER:-./videos}:/videos:ro
       - ${CHUNK_FOLDER:-./chunks}:/chunks
+      - ${STATS_DIR:-./stats}:/app/stats
     environment:
       - CHUNK_DURATION=${CHUNK_DURATION:-300}
       - CLIP_MIN=${CLIP_MIN:-5}
@@ -47,6 +48,7 @@ services:
       - HW_ACCEL=${HW_ACCEL:-none}
       - VIDEO_DIR=/videos
       - OUTPUT_DIR=/chunks
+      - STATS_DIR=/app/stats
     entrypoint: >
       /bin/sh -c "
         echo '[chunk-gen] Ready. Waiting for host cron or manual triggers...' &&
@@ -80,9 +82,9 @@ services:
     ports:
       - "${PORT:-8081}:8080"
     volumes:
-      - ./data:/app/data
       - ${AUDIO_FOLDER:-./audio}:/audio:ro
       - ${CHUNK_FOLDER:-./chunks}:/chunks
+      - ${STATS_DIR:-./stats}:/app/stats
       - ./.env:/app/.env:ro
       - ./app.py:/app/app.py:ro
       - ./templates:/app/templates:ro
@@ -90,10 +92,10 @@ services:
       - CHUNK_FOLDER=/chunks
       - PORT=8080
       - EXTERNAL_PORT=${PORT:-8081}
-      - DB_PATH=/app/data/segments.db
       - RTMP_URL=rtmp://nginx-rtmp:1935/live/stream
       - AUDIO_FOLDER=/audio
       - HLS_PORT=${HLS_PORT:-8080}
+      - STATS_DIR=/app/stats
     depends_on:
       nginx-rtmp:
         condition: service_healthy

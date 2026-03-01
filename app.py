@@ -27,17 +27,21 @@ EXTERNAL_PORT = int(os.getenv('EXTERNAL_PORT', str(PORT)))
 HLS_PORT = int(os.getenv('HLS_PORT', '8080'))
 RTMP_URL = os.getenv('RTMP_URL', 'rtmp://nginx-rtmp:1935/live/stream')
 AUDIO_FOLDER = os.getenv('AUDIO_FOLDER', '')
+# Persistent stats dir (mount this volume so hours played / chunks created survive new deployments)
+STATS_DIR = os.getenv('STATS_DIR', '').strip() or None
 
 # Initialize components
 print(f"Initializing Random Video Clips Streaming Server...")
 print(f"Chunk folder: {CHUNK_FOLDER}")
 print(f"RTMP URL: {RTMP_URL}")
 print(f"Audio folder: {AUDIO_FOLDER or '(none — video audio used)'}")
+print(f"Stats dir (persistent): {STATS_DIR or CHUNK_FOLDER}")
 print("Streaming mode: RTMP push (chunked stream)")
 
 # Initialize clip pusher
 clip_pusher = ClipPusher(CHUNK_FOLDER, RTMP_URL,
-                         audio_folder=AUDIO_FOLDER if AUDIO_FOLDER else None)
+                         audio_folder=AUDIO_FOLDER if AUDIO_FOLDER else None,
+                         stats_dir=STATS_DIR)
 
 @app.route('/')
 def index():
@@ -51,15 +55,26 @@ def index():
     
     chunks = []
     if os.path.exists(CHUNK_FOLDER):
+        import json as _json
         for f in os.listdir(CHUNK_FOLDER):
             if f.endswith('.mp4') and not f.startswith('chunk_temp'):
                 filepath = os.path.join(CHUNK_FOLDER, f)
                 stat = os.stat(filepath)
+                meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
+                source_videos = []
+                if os.path.isfile(meta_path):
+                    try:
+                        with open(meta_path, 'r') as _f:
+                            meta = _json.load(_f)
+                            source_videos = meta.get('source_videos') or []
+                    except (ValueError, OSError):
+                        pass
                 chunks.append({
                     'name': f,
                     'created_at': datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
                     'timestamp': stat.st_ctime,
-                    'size_mb': round(stat.st_size / (1024 * 1024), 2)
+                    'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                    'source_videos': source_videos,
                 })
     
     # Sort chunks by oldest first (since they get pruned first)
@@ -166,7 +181,13 @@ def index():
         'audio_position_sec': current_status.get('audio_position_sec'),
         'audio_track_duration_sec': current_status.get('audio_track_duration_sec'),
     }
-    return render_template('dashboard.html', chunks=chunks, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status)
+    stream_stats = {
+        'hours_played': current_status.get('hours_played'),
+        'chunks_pushed': current_status.get('chunks_pushed'),
+        'chunks_created_total': current_status.get('chunks_created_total'),
+        'total_seconds_streamed': current_status.get('total_seconds_streamed'),
+    }
+    return render_template('dashboard.html', chunks=chunks, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats)
 
 
 @app.route('/iptv.m3u')
@@ -215,6 +236,88 @@ def status():
 def stream_status():
     """Get RTMP stream pusher status"""
     return jsonify(clip_pusher.get_status())
+
+
+def _read_proc_stat_cpu():
+    """Read first line of /proc/stat (aggregate CPU). Returns (user, nice, system, idle, iowait, irq, softirq) or None."""
+    try:
+        with open('/proc/stat', 'r') as f:
+            line = f.readline()
+        if line.startswith('cpu '):
+            parts = line.split()
+            # cpu  user nice system idle iowait irq softirq steal guest guest_nice
+            return tuple(int(x) for x in parts[1:8])
+    except (OSError, ValueError):
+        return None
+
+
+@app.route('/api/system-usage')
+def system_usage():
+    """Live CPU, memory, and optional GPU usage for the dashboard."""
+    import time
+    import subprocess
+    out = {
+        'cpu_percent': None,
+        'mem_used_mb': None,
+        'mem_total_mb': None,
+        'mem_percent': None,
+        'gpu_percent': None,
+        'gpu_mem_used_mb': None,
+        'gpu_mem_total_mb': None,
+    }
+    # CPU: two samples of /proc/stat
+    s1 = _read_proc_stat_cpu()
+    if s1:
+        time.sleep(0.3)
+        s2 = _read_proc_stat_cpu()
+        if s2:
+            busy1 = s1[0] + s1[1] + s1[2] + s1[5] + s1[6]
+            total1 = busy1 + s1[3] + s1[4]
+            busy2 = s2[0] + s2[1] + s2[2] + s2[5] + s2[6]
+            total2 = busy2 + s2[3] + s2[4]
+            delta_total = total2 - total1
+            if delta_total > 0:
+                out['cpu_percent'] = round(100.0 * (busy2 - busy1) / delta_total, 1)
+    # Memory
+    if os.path.exists('/proc/meminfo'):
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                total_kb = avail_kb = None
+                for line in f:
+                    if line.startswith('MemTotal:'):
+                        total_kb = int(line.split()[1])
+                    elif line.startswith('MemAvailable:'):
+                        avail_kb = int(line.split()[1])
+                    if total_kb is not None and avail_kb is not None:
+                        break
+            if total_kb and total_kb > 0:
+                used_kb = total_kb - avail_kb
+                out['mem_total_mb'] = round(total_kb / 1024, 1)
+                out['mem_used_mb'] = round(used_kb / 1024, 1)
+                out['mem_percent'] = round(100.0 * used_kb / total_kb, 1)
+        except (ValueError, OSError):
+            pass
+    # GPU (nvidia-smi)
+    try:
+        result = subprocess.run(
+            [
+                'nvidia-smi',
+                '--query-gpu=utilization.gpu,memory.used,memory.total',
+                '--format=csv,noheader,nounits',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().splitlines()[0].split(',')
+            if len(parts) >= 3:
+                out['gpu_percent'] = int(parts[0].strip().split()[0] or 0)
+                out['gpu_mem_used_mb'] = float(parts[1].strip().split()[0] or 0)
+                out['gpu_mem_total_mb'] = float(parts[2].strip().split()[0] or 0)
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return jsonify(out)
 
 @app.route('/api/skip_to_next', methods=['POST'])
 def skip_to_next():

@@ -19,7 +19,8 @@ if [ "$1" != "manual" ]; then
   while [ "$(ls "$OUTPUT_DIR"/*.mp4 2>/dev/null | wc -l)" -ge "$MAX_CHUNKS" ]; do
     oldest=$(ls -t "$OUTPUT_DIR"/*.mp4 | tail -1)
     echo "Pruning old chunk: $oldest"
-    rm -f "$oldest"
+    base="${oldest%.mp4}"
+    rm -f "$oldest" "${base}.meta.json"
   done
 else
   echo "Manual generation requested. Skipping pruning."
@@ -61,12 +62,22 @@ rm -f "$CURRENT_VIDEOS"
 
 touch "$RUNNING_FILE"
 
+# Persistent stats dir: mount this so hours played / chunks ever created survive new deployments (optional)
+STATS_DIR="${STATS_DIR:-$OUTPUT_DIR}"
+mkdir -p "$STATS_DIR"
+
+# Used-segments JSON: track which time ranges we've used per video so we pick new timeframes next time
+USED_SEGMENTS_JSON="${STATS_DIR}/.used_segments.json"
+SEGMENT_TRACKER="${SEGMENT_TRACKER:-/scripts/segment_tracker.py}"
+
 # Generate CHUNKS_PER_RUN chunks
+CHUNKS_CREATED_FILE="${STATS_DIR}/.chunks_created_total"
 for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   echo "--- Generating chunk $i of $CHUNKS_PER_RUN ---"
   CONCAT_LIST=$(mktemp /tmp/concat_XXXX.txt)
   total=0
   idx=0
+  SOURCE_BASENAMES=""
 
   while [ "$total" -lt "$CHUNK_DURATION" ]; do
     file=$(head -n 1 "$QUEUE_FILE")
@@ -84,7 +95,14 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
     max_start=$(( dur - clip_len ))
     [ "$max_start" -le 0 ] && continue
 
-    start=$(( RANDOM % max_start ))
+    # Pick start in an unused (or least-used) range; fallback to random if tracker missing or fails
+    start=""
+    if command -v python3 >/dev/null 2>&1 && [ -f "$SEGMENT_TRACKER" ]; then
+      start=$(python3 "$SEGMENT_TRACKER" pick "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || true)
+    fi
+    if [ -z "$start" ] || ! [ "$start" -ge 0 ] 2>/dev/null || [ "$start" -gt "$max_start" ] 2>/dev/null; then
+      start=$(( RANDOM % (max_start + 1) ))
+    fi
     tmp="/tmp/clip_${idx}.mp4"
 
     if [ "$HW_ACCEL" = "nvidia" ]; then
@@ -100,15 +118,32 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
       -c:a aac -b:a 128k -ar 44100 -ac 2 \
       -movflags +faststart \
       -loglevel error "$tmp" && \
-      echo "file '$tmp'" >> "$CONCAT_LIST"
+      echo "file '$tmp'" >> "$CONCAT_LIST" && \
+      { [ -f "$SEGMENT_TRACKER" ] && python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start" "$(( start + clip_len ))" 2>/dev/null || true; }
+      basename=$(basename "$file")
+      SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+,}$basename"
 
     total=$(( total + clip_len ))
     idx=$(( idx + 1 ))
   done
 
-  CHUNK_NAME="$OUTPUT_DIR/chunk_$(date +%s).mp4"
+  CHUNK_TS=$(date +%s)
+  CHUNK_NAME="$OUTPUT_DIR/chunk_${CHUNK_TS}.mp4"
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
     -c copy "$CHUNK_NAME" -loglevel error
+
+  # Write metadata: source videos used (for dashboard)
+  CHUNK_BASE="chunk_${CHUNK_TS}"
+  META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"
+  if [ -n "$SOURCE_BASENAMES" ]; then
+    # Build JSON array of unique basenames (order preserved, comma-sep to array)
+    echo "{\"source_videos\": [$(echo "$SOURCE_BASENAMES" | tr ',' '\n' | sort -u | sed "s/^/\"/;s/\$/\"/" | paste -sd,)], \"created_at\": \"$(date -Iseconds)\"}" > "$META_FILE"
+  fi
+
+  # Persist "chunks ever created" count
+  count=0
+  [ -f "$CHUNKS_CREATED_FILE" ] && count=$(cat "$CHUNKS_CREATED_FILE")
+  echo $(( count + 1 )) > "$CHUNKS_CREATED_FILE"
 
   rm -f /tmp/clip_*.mp4 "$CONCAT_LIST"
   echo "Created: $CHUNK_NAME"

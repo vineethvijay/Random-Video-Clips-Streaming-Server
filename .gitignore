@@ -39,6 +39,7 @@ Thumbs.db
 
 audio/
 chunks/
+stats/
 
 # Remote deploy config (server paths, credentials) — keep local only
 .deploy/

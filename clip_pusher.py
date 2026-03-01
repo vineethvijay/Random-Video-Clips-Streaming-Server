@@ -4,12 +4,16 @@ Creates a never-ending live stream from pre-generated video chunks with continuo
 """
 
 import glob
+import json
 import os
 import random
 import subprocess
 import threading
 import time
 from typing import List, Optional
+
+STREAM_STATS_FILENAME = ".stream_stats.json"
+CHUNKS_CREATED_FILENAME = ".chunks_created_total"
 
 # ── Output normalization ──────────────────────────────────────────
 OUTPUT_AUDIO_RATE    = 44100
@@ -33,10 +37,13 @@ class ClipPusher:
     """Pushes random video clips + continuous background audio to RTMP."""
 
     def __init__(self, chunk_folder: str, rtmp_url: str,
-                 audio_folder: Optional[str] = None):
+                 audio_folder: Optional[str] = None,
+                 stats_dir: Optional[str] = None):
         self.chunk_folder    = chunk_folder
         self.rtmp_url        = rtmp_url
         self.audio_folder    = audio_folder
+        # Persistent stats (hours played, chunks pushed/created) live here so they survive deployments
+        self._stats_dir      = (stats_dir or chunk_folder).rstrip(os.sep)
         self._audio_files: List[str] = []
 
         self._thread: Optional[threading.Thread] = None
@@ -49,9 +56,12 @@ class ClipPusher:
         self._persistent_audio_duration: Optional[float] = None  # seconds
         self._audio_position: float = 0.0  # position within track (0..duration), so next chunk continues from here
         self._chunks_pushed  = 0
+        self._total_seconds_streamed: float = 0.0  # persisted, survives restarts
         self._errors         = 0
         self._last_error: Optional[str] = None
         self._streamer_process: Optional[subprocess.Popen] = None
+
+        self._load_stream_stats()
 
         # Scan audio folder on init
         if self.audio_folder and os.path.isdir(self.audio_folder):
@@ -91,11 +101,51 @@ class ClipPusher:
             self._thread.join(timeout=10)
         print("Clip pusher stopped")
 
+    def _stream_stats_path(self) -> str:
+        return os.path.join(self._stats_dir, STREAM_STATS_FILENAME)
+
+    def _load_stream_stats(self) -> None:
+        path = self._stream_stats_path()
+        if os.path.isfile(path):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                self._total_seconds_streamed = float(data.get('total_seconds_streamed', 0))
+                self._chunks_pushed = int(data.get('chunks_pushed_total', 0))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    def _save_stream_stats(self) -> None:
+        path = self._stream_stats_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                json.dump({
+                    'total_seconds_streamed': self._total_seconds_streamed,
+                    'chunks_pushed_total': self._chunks_pushed,
+                }, f)
+        except OSError:
+            pass
+
+    def _read_chunks_created_total(self) -> Optional[int]:
+        path = os.path.join(self._stats_dir, CHUNKS_CREATED_FILENAME)
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, 'r') as f:
+                return int(f.read().strip())
+        except (ValueError, OSError):
+            return None
+
     def get_status(self) -> dict:
+        hours_played = round(self._total_seconds_streamed / 3600, 2) if self._total_seconds_streamed else 0
         return {
             'running':                   self._running,
             'rtmp_url':                  self.rtmp_url,
             'chunks_pushed':             self._chunks_pushed,
+            'total_seconds_streamed':    round(self._total_seconds_streamed, 1),
+            'hours_played':              hours_played,
+            'chunks_created_total':      self._read_chunks_created_total(),
             'audio_files_found':        len(self._audio_files),
             'current_audio':             self._current_audio,
             'audio_position_sec':        round(self._audio_position, 1) if self._persistent_audio_duration else None,
@@ -281,13 +331,15 @@ class ClipPusher:
                     print(f"Stream loop error: {exc}")
                     time.sleep(5)
                 # Advance by how much audio we actually output (chunk duration if it ran to completion, else wall clock)
+                if self._current_chunk_duration is not None and self._streamer_process and self._streamer_process.returncode == 0:
+                    advance = self._current_chunk_duration
+                else:
+                    advance = time.time() - self._current_chunk_started_at
                 if self._persistent_audio_duration and self._persistent_audio_duration > 0:
-                    if self._current_chunk_duration is not None and self._streamer_process and self._streamer_process.returncode == 0:
-                        advance = self._current_chunk_duration
-                    else:
-                        advance = time.time() - self._current_chunk_started_at
                     self._audio_position = (self._audio_position + advance) % self._persistent_audio_duration
-                    
+                self._total_seconds_streamed += advance
+                self._save_stream_stats()
+
                 # Cleanup process before next iteration
                 if self._streamer_process and self._streamer_process.poll() is None:
                     self._streamer_process.terminate()
