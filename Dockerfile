@@ -32,14 +32,5 @@ ENV PYTHONUNBUFFERED=1
 # Switch to non-root user
 USER appuser
 
-# Run the application with gunicorn + gthread for production compatibility with threading
-CMD ["gunicorn", \
-     "--worker-class", "gthread", \
-     "--threads", "2", \
-     "--workers", "1", \
-     "--preload", \
-     "--timeout", "120", \
-     "--bind", "0.0.0.0:8080", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "app:app"]
+# Run with gunicorn; post_fork in gunicorn.conf.py starts the clip_pusher in the worker
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "app:app"]

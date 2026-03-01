@@ -3,6 +3,11 @@
 
 set -e
 
+# Run from repo root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
 # Check if .env exists
 if [ ! -f .env ]; then
     echo "Error: .env file not found. Run setup.sh first."
@@ -10,7 +15,9 @@ if [ ! -f .env ]; then
 fi
 
 # Load environment variables
+set -a
 source .env
+set +a
 
 # Check if VIDEO_FOLDER is set
 if [ -z "$VIDEO_FOLDER" ]; then
@@ -24,7 +31,7 @@ if [ ! -d "$VIDEO_FOLDER" ]; then
     echo "Make sure the path is correct and accessible"
 fi
 
-# Start with docker-compose
+# Docker Compose command
 if command -v docker-compose &> /dev/null; then
     COMPOSE_CMD="docker-compose"
 elif docker compose version &> /dev/null; then
@@ -34,51 +41,78 @@ else
     exit 1
 fi
 
-# Start the container
-$COMPOSE_CMD up -d
+# Colors (optional; strip if not a tty)
+if [ -t 1 ]; then
+    C="\033[0;36m"   # cyan
+    G="\033[0;32m"   # green
+    Y="\033[0;33m"   # yellow
+    B="\033[1m"      # bold
+    R="\033[0m"      # reset
+else
+    C= G= Y= B= R=
+fi
 
-# Wait a moment for container to start
+# Ask what to do
+echo ""
+echo -e "${C}${B}🎬 Random Video Clips Streaming Server${R}"
+echo -e "${C}─────────────────────────────────────────${R}"
+echo ""
+echo -e "  ${G}1)${R} 🔨  Rebuild and up    ${Y}(docker compose up -d --build)${R}"
+echo -e "  ${G}2)${R} 🔄  Stop and up       ${Y}(docker compose down && docker compose up -d)${R}"
+echo -e "  ${G}3)${R} ▶️   Simple up         ${Y}(docker compose up -d)${R}"
+echo ""
+read -p "$(echo -e ${Y}Choose [1-3] \(default 3\): ${R})" choice
+choice="${choice:-3}"
+
+case "$choice" in
+    1)
+        echo -e "\n${G}🔨 Rebuilding and starting...${R}\n"
+        $COMPOSE_CMD up -d --build
+        ;;
+    2)
+        echo -e "\n${G}🔄 Stopping, then starting...${R}\n"
+        $COMPOSE_CMD down
+        $COMPOSE_CMD up -d
+        ;;
+    3)
+        echo -e "\n${G}▶️  Starting...${R}\n"
+        $COMPOSE_CMD up -d
+        ;;
+    *)
+        echo "Invalid choice. Exiting."
+        exit 1
+        ;;
+esac
+
+# Wait a moment for containers to start
 sleep 2
 
-# Check if container is actually running
+# Check if containers are running
 CONTAINER_STATUS=$($COMPOSE_CMD ps --format json 2>/dev/null | grep -o '"State":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "unknown")
 
 if [ "$CONTAINER_STATUS" != "running" ]; then
-    echo "⚠️  Warning: Container status is '$CONTAINER_STATUS'"
+    echo -e "${Y}⚠️  Warning: Container status is '$CONTAINER_STATUS'${R}"
     echo "Checking logs for errors..."
     $COMPOSE_CMD logs --tail=20
     echo ""
     echo "Container may have crashed. Check logs above."
     exit 1
 else
-    # Check if the app process is running inside container
-    if docker exec random-video-streamer ps aux | grep -q "[p]ython app.py"; then
-        echo "✅ Container is running"
-        
-        # Test if API is responding
-        sleep 2
-        if curl -s -f "http://localhost:${PORT:-8081}/api/status" > /dev/null 2>&1; then
-            echo "✅ API is responding"
-            echo "✅ Server is fully operational!"
-        else
-            echo "⚠️  Note: API test from host failed (this is normal on Docker Desktop macOS)"
-            echo "   The server is running inside the container and handling requests"
-            echo "   Check logs to verify: $COMPOSE_CMD logs -f | grep -E '(Running|GET|Selected)'"
-            echo ""
-            echo "   To access from your TV, use your Mac's IP address:"
-            echo "   http://$(ipconfig getifaddr en0 2>/dev/null || echo 'YOUR-MAC-IP'):${PORT:-8081}/iptv.m3u"
-        fi
+    echo -e "\n${G}✅ Containers are running${R}"
+    sleep 2
+    if curl -s -f "http://localhost:${PORT:-8081}/api/status" > /dev/null 2>&1; then
+        echo -e "${G}✅ API is responding — server is operational${R}"
     else
-        echo "⚠️  Warning: Container is up but Python process not found"
-        echo "Checking logs..."
-        $COMPOSE_CMD logs --tail=20
-        exit 1
+        echo -e "${Y}⚠️  API not responding yet (may need a few more seconds)${R}"
+        echo "   Dashboard: http://localhost:${PORT:-8081}/"
+        echo "   On macOS/Docker Desktop, use your Mac IP for TV: http://\$(ipconfig getifaddr en0 2>/dev/null || echo 'YOUR-IP'):${PORT:-8081}/iptv.m3u"
     fi
 fi
 
 echo ""
-echo "Useful commands:"
-echo "  Check logs:    $COMPOSE_CMD logs -f"
-echo "  Check status:  $COMPOSE_CMD ps"
-echo "  Stop server:   $COMPOSE_CMD down"
-echo "  Access stream: http://localhost:${PORT:-8081}/playlist.m3u8"
+echo -e "${C}📋 Useful commands (copy as needed):${R}"
+echo "  $COMPOSE_CMD logs -f"
+echo "  $COMPOSE_CMD ps"
+echo "  $COMPOSE_CMD down"
+echo "  Dashboard:  http://localhost:${PORT:-8081}/"
+echo "  HLS stream: http://localhost:${HLS_PORT:-8082}/hls/stream.m3u8"
