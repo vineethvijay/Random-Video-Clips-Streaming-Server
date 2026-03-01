@@ -4,13 +4,15 @@ A containerized live streaming server that continuously shuffles and streams ran
 
 ## Features
 
-- **Web Dashboard** — internal UI to monitor chunks, view system status, and manually trigger generation
-- **Continuous live stream** — no playback gaps; clips are piped into a single persistent RTMP connection
-- **Continuous background audio** — mount an MP3 folder; audio plays uninterrupted while video clips shuffle
-- **Strict LRU Smart shuffle** — perfectly cycles through videos using a Least-Recently-Used queue to completely avoid consecutive duplication until all videos are used
-- **Normalized output** — all clips transcoded to a consistent resolution/fps so transitions are smooth
-- **Compatible** — works with VLC, Safari, Samsung TV IPTV apps, and any HLS player
-- **Production-grade** — Dockerized with Gunicorn + gevent, tini init for zombie reaping, healthchecks, and log rotation
+- **Web Dashboard** — monitor chunks (with pagination, Now Playing, progress bars), trigger generation, view stream stats (hours played, chunks ever created), and open **Live stream** (HLS.js player, collapsible) on the same page. Play next, per-chunk Play link, and per-chunk **Sources** (which source videos were used). System Information includes **live CPU, memory, and GPU** usage (polled every 5s).
+- **Continuous live stream** — no playback gaps; clips are piped into a single persistent RTMP connection.
+- **Continuous background audio** — mount an MP3 folder; the same track plays across chunk switches (position tracked and resumed). Dashboard shows audio “Now Playing” and progress within the track.
+- **Strict LRU + segment tracking** — video files are rotated with a Least-Recently-Used queue. A JSON-based **segment tracker** records used time ranges per file so new clips prefer **unused** segments; a Python helper (`scripts/segment_tracker.py`) picks start times accordingly.
+- **Chunk metadata** — each generated chunk has a `.meta.json` sidecar listing source video filenames (no database).
+- **Persistent stats** — optional `STATS_DIR` (e.g. `./stats`) stores hours played and chunks-ever-created so they survive restarts and new deployments.
+- **Normalized output** — all clips transcoded to a consistent resolution/fps so transitions are smooth.
+- **Compatible** — works with VLC, Safari, Samsung TV IPTV apps, and any HLS player.
+- **Production-grade** — Dockerized with Gunicorn, healthchecks, and log rotation.
 
 ## Architecture
 
@@ -77,7 +79,7 @@ flowchart TD
 ```
 
 The system operates across three decoupled, robust containers:
-- **`chunk-generator`** — runs in the background polling for manual UI triggers or automated schedules to crunch video segments down into highly normalized 5-minute `.mp4` chunks. Tracks history to prevent repeats.
+- **`chunk-generator`** — runs in the background polling for manual UI triggers or automated schedules to build 5-minute `.mp4` chunks from your video library. Uses a per-video LRU queue and a segment tracker (`.used_segments.json`) so clip start times prefer unused ranges within each file.
 - **`random-video-streamer`** — the brain and web interface. Mixes the chunks with continuous looping background audio, preventing gaps in playback and pushing a 24/7 RTMP feed to NGINX.
 - **`nginx-rtmp`** — receives the feed, packages it efficiently into HLS segments on a temporary filesystem, and serves it seamlessly to devices over HTTP.
 
@@ -95,7 +97,6 @@ VIDEO_FOLDER=/path/to/your/videos
 # Leave empty for a silent stream
 AUDIO_FOLDER=/path/to/your/music
 
-SEGMENT_DURATION=5  # seconds per clip
 PORT=8081           # Flask API port
 ```
 
@@ -107,11 +108,12 @@ docker compose up -d
 **3. Watch & Manage:**
 | URL | Purpose |
 |-----|---------|
-| `http://server-ip:8081/` | **Web Dashboard** (Monitor chunks, trigger generation) |
+| `http://server-ip:8081/` | **Web Dashboard** (chunks, audio, live HLS player, stream stats, system info with live CPU/mem/GPU, Generate Chunks, Play next) |
 | `http://server-ip:8082/hls/stream.m3u8` | **Live HLS stream** (VLC, Safari, TV apps) |
 | `http://server-ip:8081/iptv.m3u` | IPTV playlist (points to the HLS stream) |
 | `http://server-ip:8081/api/status` | Server status |
-| `http://server-ip:8081/api/stream-status` | Clip pusher status |
+| `http://server-ip:8081/api/stream-status` | Clip pusher status (current chunk/audio, hours played, etc.) |
+| `http://server-ip:8081/api/system-usage` | Live CPU, memory, GPU usage (for dashboard) |
 
 ## Samsung / TV Setup
 
@@ -134,7 +136,7 @@ These variables control the Flask API and the RTMP clip pusher.
 | `VIDEO_FOLDER` | `/videos` | Source video directory (mount in Compose) |
 | `AUDIO_FOLDER` | `/audio` | Background MP3 directory. If empty, uses video audio. |
 | `CHUNK_FOLDER` | `/chunks` | Directory where `.mp4` chunks are read from |
-| `DB_PATH` | `/app/data/segments.db` | SQLite database for tracking played clips |
+| `STATS_DIR` | *(none)* | **Persistent stats dir.** When set (e.g. `./stats`), hours played and chunks-ever-created are stored here so they survive new deployments. Compose mounts `${STATS_DIR:-./stats}` as `/app/stats`. Ensure this dir exists and is writable by both containers (e.g. `mkdir -p ./stats && chmod 777 ./stats` or match the streamer’s UID). |
 | `RTMP_URL` | `rtmp://nginx-rtmp:1935/live/stream` | Internal target for the RTMP stream |
 
 ### 2. Chunk Generator Configuration (`chunk-generator`)
@@ -174,9 +176,12 @@ The **Chunk Generator** supports both CPU encoding (`libx264`) and NVIDIA hardwa
 |--------|----------|-------------|
 | GET | `/` | Web Dashboard HTML |
 | GET | `/api/status` | Full server status & config overview |
-| GET | `/api/stream-status` | RTMP pusher & current audio/chunk info |
+| GET | `/api/stream-status` | RTMP pusher & current chunk/audio, hours played, chunks created |
+| GET | `/api/system-usage` | Live CPU %, memory %, GPU % (for dashboard polling) |
+| GET | `/chunks/<filename>` | Serve a chunk file (e.g. for “Play” in dashboard) |
 | GET | `/iptv.m3u` | IPTV playlist (M3U) for external players |
 | POST | `/api/generate_chunk` | Triggers the generator to build new chunks |
+| POST | `/api/skip_to_next` | Skip current chunk and advance to next (audio position preserved) |
 
 ## Troubleshooting
 
@@ -192,8 +197,13 @@ docker compose logs -f nginx-rtmp              # HLS server logs
 
 ## Scripts
 
+- `scripts/segment_tracker.py` — used by the chunk generator to pick unused time ranges and record used segments (JSON file).
 - `scripts/setup.sh` — initial setup and environment check
 - `scripts/start.sh` — start the streaming server
+
+## Segment tracking
+
+The chunk generator keeps a JSON file (`.used_segments.json`, under `STATS_DIR` or the chunk folder) that records which time ranges have been used in each source video. The Python helper `scripts/segment_tracker.py` (used by `generate_chunk.sh`) picks a start time in an **unused** range; if none fit or the tracker is unavailable, it falls back to a random start. This reduces repetition of the same segment within a video.
 
 ## License
 
