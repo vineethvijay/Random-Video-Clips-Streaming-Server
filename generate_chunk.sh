@@ -71,8 +71,14 @@ USED_SEGMENTS_JSON="${STATS_DIR}/.used_segments.json"
 SEGMENT_TRACKER="${SEGMENT_TRACKER:-/scripts/segment_tracker.py}"
 
 # Generate CHUNKS_PER_RUN chunks
+STOP_FILE="$OUTPUT_DIR/.stop_generation"
 CHUNKS_CREATED_FILE="${STATS_DIR}/.chunks_created_total"
 for i in $(seq 1 "$CHUNKS_PER_RUN"); do
+  if [ -f "$STOP_FILE" ]; then
+    echo "Stop requested. Halting chunk generation."
+    rm -f "$STOP_FILE"
+    exit 0
+  fi
   echo "--- Generating chunk $i of $CHUNKS_PER_RUN ---"
   CONCAT_LIST=$(mktemp /tmp/concat_XXXX.txt)
   total=0
@@ -80,6 +86,11 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   SOURCE_BASENAMES=""
 
   while [ "$total" -lt "$CHUNK_DURATION" ]; do
+    if [ -f "$STOP_FILE" ]; then
+      echo "Stop requested. Halting chunk generation."
+      rm -f "$STOP_FILE"
+      exit 0
+    fi
     file=$(head -n 1 "$QUEUE_FILE")
     [ -z "$file" ] && echo "No videos found in queue" && break
 
@@ -132,13 +143,18 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
     -c copy "$CHUNK_NAME" -loglevel error
 
-  # Write metadata: source videos used (for dashboard)
+  # Write metadata: source videos, codec, resolution (for dashboard)
   CHUNK_BASE="chunk_${CHUNK_TS}"
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"
-  if [ -n "$SOURCE_BASENAMES" ]; then
-    # Build JSON array of unique basenames (order preserved, comma-sep to array)
-    echo "{\"source_videos\": [$(echo "$SOURCE_BASENAMES" | tr ',' '\n' | sort -u | sed "s/^/\"/;s/\$/\"/" | paste -sd,)], \"created_at\": \"$(date -Iseconds)\"}" > "$META_FILE"
+  SOURCES_JSON="[]"
+  [ -n "$SOURCE_BASENAMES" ] && SOURCES_JSON="[$(echo "$SOURCE_BASENAMES" | tr ',' '\n' | sort -u | sed 's/^/"/;s/$/"/' | paste -sd,)]"
+  VIDEO_EXTRA=""
+  if codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null) && \
+     width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null) && \
+     height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null); then
+    VIDEO_EXTRA=", \"video_codec\": \"$codec\", \"width\": $width, \"height\": $height"
   fi
+  echo "{\"source_videos\": $SOURCES_JSON, \"created_at\": \"$(date -Iseconds)\"$VIDEO_EXTRA}" > "$META_FILE"
 
   # Persist "chunks ever created" count
   count=0
