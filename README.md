@@ -4,7 +4,7 @@ A containerized live streaming server that continuously shuffles and streams ran
 
 ## Features
 
-- **Web Dashboard** — monitor chunks (with pagination, Now Playing, progress bars), trigger generation, view stream stats (hours played, chunks ever created), and open **Live stream** (HLS.js player, collapsible) on the same page. Play next, per-chunk Play link, and per-chunk **Sources** (which source videos were used). System Information includes **live CPU, memory, and GPU** usage (polled every 5s).
+- **Web Dashboard** — view and control video chunks (pagination, Now Playing, progress), see stream stats (hours played, chunks created), open a live HLS stream, check source videos, and watch live system info (CPU, memory, GPU).
 - **Continuous live stream** — no playback gaps; clips are piped into a single persistent RTMP connection.
 - **Continuous background audio** — mount an MP3 folder; the same track plays across chunk switches (position tracked and resumed). Dashboard shows audio “Now Playing” and progress within the track.
 - **Strict LRU + segment tracking** — video files are rotated with a Least-Recently-Used queue. A JSON-based **segment tracker** records used time ranges per file so new clips prefer **unused** segments; a Python helper (`scripts/segment_tracker.py`) picks start times accordingly.
@@ -13,6 +13,13 @@ A containerized live streaming server that continuously shuffles and streams ran
 - **Normalized output** — all clips transcoded to a consistent resolution/fps so transitions are smooth.
 - **Compatible** — works with VLC, Safari, Samsung TV IPTV apps, and any HLS player.
 - **Production-grade** — Dockerized with Gunicorn, healthchecks, and log rotation.
+
+<details>
+<summary><strong style="color:#0366d6">📷 Dashboard Preview</strong></summary>
+
+![Dashboard](images/image1.png)
+
+</details>
 
 ## Architecture
 
@@ -115,7 +122,7 @@ docker compose up -d
 | `http://server-ip:8081/api/stream-status` | Clip pusher status (current chunk/audio, hours played, etc.) |
 | `http://server-ip:8081/api/system-usage` | Live CPU, memory, GPU usage (for dashboard) |
 
-## Samsung / TV Setup
+## TV Setup
 
 1. Install an IPTV app (e.g. SS IPTV, TiviMate, Smart IPTV)
 2. Add playlist URL: `http://server-ip:8081/iptv.m3u`

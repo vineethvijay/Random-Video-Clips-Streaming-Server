@@ -62,12 +62,41 @@ def index():
                 stat = os.stat(filepath)
                 meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
                 source_videos = []
+                video_codec = None
+                width = None
+                height = None
                 if os.path.isfile(meta_path):
                     try:
                         with open(meta_path, 'r') as _f:
                             meta = _json.load(_f)
                             source_videos = meta.get('source_videos') or []
+                            video_codec = meta.get('video_codec')
+                            width = meta.get('width')
+                            height = meta.get('height')
                     except (ValueError, OSError):
+                        pass
+                # Fallback: run ffprobe for chunks missing codec/resolution in meta (e.g. older chunks)
+                if (video_codec is None or width is None or height is None) and os.path.isfile(filepath):
+                    try:
+                        import subprocess
+                        if video_codec is None:
+                            out = subprocess.run(
+                                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                                 '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', filepath],
+                                capture_output=True, text=True, timeout=5)
+                            if out.returncode == 0 and out.stdout.strip():
+                                video_codec = out.stdout.strip()
+                        if width is None or height is None:
+                            out = subprocess.run(
+                                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                                 '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', filepath],
+                                capture_output=True, text=True, timeout=5)
+                            if out.returncode == 0 and out.stdout.strip():
+                                parts = out.stdout.strip().split('x')
+                                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                                    width = int(parts[0])
+                                    height = int(parts[1])
+                    except (subprocess.TimeoutExpired, OSError, ValueError):
                         pass
                 chunks.append({
                     'name': f,
@@ -75,10 +104,13 @@ def index():
                     'timestamp': stat.st_ctime,
                     'size_mb': round(stat.st_size / (1024 * 1024), 2),
                     'source_videos': source_videos,
+                    'video_codec': video_codec,
+                    'width': width,
+                    'height': height,
                 })
     
-    # Sort chunks by oldest first (since they get pruned first)
-    chunks.sort(key=lambda x: x['timestamp'])
+    # Sort chunks by newest first (oldest last)
+    chunks.sort(key=lambda x: x['timestamp'], reverse=True)
 
     # List audio files (same extensions as clip_pusher)
     audio_files = []
@@ -119,8 +151,8 @@ def index():
         chunks_per_run = int(settings.get('CHUNKS_PER_RUN', '4'))
         
         for i, chunk in enumerate(chunks):
-            # chunk i will be deleted when i + (max_chunks - current_count) chunks are added
-            remaining_till_expiry = max(0, max_chunks - len(chunks) + 1 + i)
+            # chunks are newest-first; oldest (high index) expires first
+            remaining_till_expiry = max(0, max_chunks - i)
             chunk['days_to_expire'] = math.ceil(remaining_till_expiry / chunks_per_run)
 
     # Gather System Information
@@ -162,6 +194,17 @@ def index():
     chunks_total_mb = round(sum(c['size_mb'] for c in chunks), 2) if chunks else 0
     chunks_count = len(chunks)
 
+    # Chunk folder mount total/available (filesystem size)
+    chunk_mount_total_mb = None
+    chunk_mount_available_mb = None
+    if os.path.exists(CHUNK_FOLDER):
+        try:
+            st = os.statvfs(CHUNK_FOLDER)
+            chunk_mount_total_mb = round((st.f_frsize * st.f_blocks) / (1024 * 1024), 1)
+            chunk_mount_available_mb = round((st.f_frsize * st.f_bavail) / (1024 * 1024), 1)
+        except OSError:
+            pass
+
     sys_info = {
         'os': os_info,
         'docker': 'Yes' if is_docker else 'No',
@@ -171,6 +214,8 @@ def index():
         'mem_available_mb': mem_available_mb,
         'chunks_total_mb': chunks_total_mb,
         'chunks_count': chunks_count,
+        'chunk_mount_total_mb': chunk_mount_total_mb,
+        'chunk_mount_available_mb': chunk_mount_available_mb,
     }
 
     initial_stream_status = {
@@ -187,7 +232,9 @@ def index():
         'chunks_created_total': current_status.get('chunks_created_total'),
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
-    return render_template('dashboard.html', chunks=chunks, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats)
+    current_chunk_data = next((c for c in chunks if c['name'] == current_chunk), None) if current_chunk else None
+    chunks_excluding_current = [c for c in chunks if c['name'] != current_chunk]
+    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats)
 
 
 @app.route('/iptv.m3u')
@@ -351,6 +398,28 @@ def trigger_generation():
         with open(trigger_file, 'w') as f:
             f.write('manual\n')
         return jsonify({'success': True, 'message': 'Triggered chunk generation. The chunk-generator container will start processing momentarily.'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/stop_generation', methods=['POST'])
+def stop_generation():
+    """Force stop chunk generation by creating a stop signal and clearing running flag"""
+    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
+    stop_file = os.path.join(CHUNK_FOLDER, '.stop_generation')
+    if not os.path.exists(running_file):
+        return jsonify({
+            'success': False,
+            'error': 'No chunk generation is currently running.'
+        }), 409
+    try:
+        with open(stop_file, 'w') as f:
+            f.write('1')
+        try:
+            os.remove(running_file)
+        except OSError:
+            pass
+        return jsonify({'success': True, 'message': 'Stop signal sent. Generation will halt after the current chunk.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
