@@ -1,5 +1,7 @@
 # Random Video Clips Streaming Server
 
+[![CI](https://github.com/vineethvijay/Random-Video-Clips-Streaming-Server/actions/workflows/ci.yml/badge.svg)](https://github.com/vineethvijay/Random-Video-Clips-Streaming-Server/actions/workflows/ci.yml)
+
 A containerized live streaming server that continuously shuffles and streams random short clips from your video collection and plays them as a never-ending HLS live stream - with optional continuous background audio that plays independently from the video shuffling.
 
 ## Features
