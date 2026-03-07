@@ -203,14 +203,9 @@ docker compose logs -f chunk-generator         # Encoding progress logs
 docker compose logs -f nginx-rtmp              # HLS server logs
 ```
 
-## Deploy to Proxmox
-
-See `deploy/README.md`. Run `./deploy/deploy-to-proxmox.sh` to sync to the server. Config in `deploy/config`.
-
 ## Scripts
 
 - `scripts/segment_tracker.py` — used by the chunk generator to pick unused time ranges and record used segments (JSON file).
-- `deploy/deploy-to-proxmox.sh` — rsync deploy to Proxmox/Linux (excludes .env, chunks, videos, etc.)
 - `scripts/setup.sh` — initial setup and environment check
 - `scripts/start.sh` — start the streaming server
 
