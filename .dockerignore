@@ -7,7 +7,6 @@ audio
 chunks
 videos
 data
-.deploy
 deploy
 __pycache__
 *.pyc
