@@ -27,7 +27,7 @@ services:
     networks:
       - video-network
 
-  # ── Chunk generator: runs once a day, makes 2 chunks ───────────
+  # ── Chunk generator: cron + manual triggers ─────────────────────
   chunk-generator:
     build:
       context: .
@@ -49,18 +49,7 @@ services:
       - VIDEO_DIR=/videos
       - OUTPUT_DIR=/chunks
       - STATS_DIR=/app/stats
-    entrypoint: >
-      /bin/sh -c "
-        echo '[chunk-gen] Ready. Waiting for host cron or manual triggers...' &&
-        while true; do
-          if [ -f /chunks/.trigger_generation ]; then
-            echo '[chunk-gen] Manual generation triggered via UI!'
-            rm -f /chunks/.trigger_generation
-            /generate_chunk.sh manual
-          fi
-          sleep 5
-        done
-      "
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
     shm_size: '512m'
     tmpfs:
       - /tmp:size=4g
@@ -78,6 +67,7 @@ services:
     build: .
     image: random-video-streamer:latest
     container_name: random-video-streamer
+    user: root  # needed for Docker socket access (restart chunk-generator from UI)
     init: true
     ports:
       - "${PORT:-8081}:8080"
@@ -85,9 +75,10 @@ services:
       - ${AUDIO_FOLDER:-./audio}:/audio:ro
       - ${CHUNK_FOLDER:-./chunks}:/chunks
       - ${STATS_DIR:-./stats}:/app/stats
-      - ./.env:/app/.env:ro
+      - ./.env:/app/.env
       - ./app.py:/app/app.py:ro
       - ./templates:/app/templates:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - CHUNK_FOLDER=/chunks
       - PORT=8080

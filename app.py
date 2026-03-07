@@ -205,11 +205,20 @@ def index():
         except OSError:
             pass
 
+    nvidia_available = False
+    try:
+        import subprocess
+        r = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], capture_output=True, text=True, timeout=5)
+        nvidia_available = r.returncode == 0 and bool(r.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+
     sys_info = {
         'os': os_info,
         'docker': 'Yes' if is_docker else 'No',
         'cpu_cores': cpu_count,
         'hw_accel': settings.get('HW_ACCEL', 'none'),
+        'nvidia_available': nvidia_available,
         'mem_total_mb': mem_total_mb,
         'mem_available_mb': mem_available_mb,
         'chunks_total_mb': chunks_total_mb,
@@ -398,6 +407,66 @@ def trigger_generation():
         with open(trigger_file, 'w') as f:
             f.write('manual\n')
         return jsonify({'success': True, 'message': 'Triggered chunk generation. The chunk-generator container will start processing momentarily.'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+EDITABLE_SETTINGS = {'MAX_CHUNKS', 'CHUNK_DURATION', 'CLIP_MIN', 'CLIP_MAX', 'CHUNKS_PER_RUN', 'CRON_SCHEDULE', 'HW_ACCEL'}
+
+@app.route('/api/update_settings', methods=['POST'])
+def update_settings():
+    """Update editable .env settings (all config fields)"""
+    data = request.get_json()
+    if not data or not isinstance(data, dict):
+        return jsonify({'success': False, 'error': 'Invalid JSON body'}), 400
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if not os.path.exists(env_path):
+        return jsonify({'success': False, 'error': '.env file not found'}), 500
+    updates = {}
+    for k, v in data.items():
+        if k not in EDITABLE_SETTINGS:
+            continue
+        s = str(v).strip().strip('"').strip("'")
+        updates[k] = s
+    if not updates:
+        return jsonify({'success': False, 'error': 'No valid settings to update'}), 400
+
+    def env_value(s):
+        return f'"{s}"' if ' ' in s else s
+
+    try:
+        lines = []
+        updated_keys = set()
+        with open(env_path, 'r') as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and not stripped.startswith('#') and '=' in stripped:
+                    key = stripped.split('=', 1)[0]
+                    if key in updates:
+                        lines.append(f"{key}={env_value(updates[key])}\n")
+                        updated_keys.add(key)
+                        continue
+                lines.append(line)
+        for k, v in updates.items():
+            if k not in updated_keys:
+                lines.append(f"{k}={env_value(v)}\n")
+        with open(env_path, 'w') as f:
+            f.writelines(lines)
+        return jsonify({'success': True, 'updated': list(updates.keys()), 'message': 'Restart chunk-generator for changes: docker compose restart chunk-generator'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/restart_chunk_generator', methods=['POST'])
+def restart_chunk_generator():
+    """Restart the chunk-generator container via Docker API"""
+    try:
+        import docker
+        # Use Unix socket directly to avoid "http+docker" scheme errors (requests 2.32+ / Docker Desktop)
+        client = docker.DockerClient(base_url='unix:///var/run/docker.sock')
+        container = client.containers.get('chunk-generator')
+        container.restart()
+        return jsonify({'success': True, 'message': 'chunk-generator restarted'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

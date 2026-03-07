@@ -1,8 +1,11 @@
 FROM linuxserver/ffmpeg:version-6.1.1-cli
 
-# Install required packages for generation script + segment tracker (Python)
-RUN apt-get update && apt-get install -y bash bc python3 && \
+# Install required packages for generation script + segment tracker (Python) + cron
+RUN apt-get update && apt-get install -y bash bc python3 cron && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/segment_tracker.py /scripts/segment_tracker.py
-RUN chmod +x /scripts/segment_tracker.py
+COPY scripts/chunk-gen-entrypoint.sh /chunk-gen-entrypoint.sh
+RUN chmod +x /scripts/segment_tracker.py /chunk-gen-entrypoint.sh
+
+ENTRYPOINT ["/chunk-gen-entrypoint.sh"]
