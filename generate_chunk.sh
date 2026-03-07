@@ -151,17 +151,8 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
     CHUNK_BASE="${word1}_${word2}_${CHUNK_DATE}_${RANDOM}"
     CHUNK_NAME="$OUTPUT_DIR/${CHUNK_BASE}.mp4"
   done
-  # Burn chunk name into video (bottom-left, semi-transparent box) – re-encode with drawtext
-  DRAWTEXT_ESC=$(echo "$CHUNK_BASE" | sed "s/\\\\/\\\\\\\\/g" | sed "s/'/\\\\'/g")
-  if [ "$HW_ACCEL" = "nvidia" ]; then
-    CONCAT_ENCODER="-c:v h264_nvenc -preset p4"
-  else
-    CONCAT_ENCODER="-c:v libx264 -preset veryfast"
-  fi
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
-    -vf "drawtext=text='${DRAWTEXT_ESC}':fontsize=20:fontcolor=white:x=20:y=main_h-50:box=1:boxcolor=black@0.5:boxborderw=4" \
-    $CONCAT_ENCODER -b:v 4000k -maxrate 4000k -bufsize 8000k -g 60 \
-    -c:a copy "$CHUNK_NAME" -loglevel error
+    -c copy "$CHUNK_NAME" -loglevel error
 
   # Write metadata: source videos, codec, resolution (for dashboard)
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"

@@ -39,6 +39,7 @@ services:
       - ${VIDEO_FOLDER:-./videos}:/videos:ro
       - ${CHUNK_FOLDER:-./chunks}:/chunks
       - ${STATS_DIR:-./stats}:/app/stats
+      - trigger_volume:/app/trigger
     environment:
       - CHUNK_DURATION=${CHUNK_DURATION:-300}
       - CLIP_MIN=${CLIP_MIN:-5}
@@ -49,6 +50,7 @@ services:
       - VIDEO_DIR=/videos
       - OUTPUT_DIR=/chunks
       - STATS_DIR=/app/stats
+      - TRIGGER_DIR=/app/trigger
       - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
     shm_size: '512m'
     tmpfs:
@@ -75,6 +77,7 @@ services:
       - ${AUDIO_FOLDER:-./audio}:/audio:ro
       - ${CHUNK_FOLDER:-./chunks}:/chunks
       - ${STATS_DIR:-./stats}:/app/stats
+      - trigger_volume:/app/trigger
       - ./.env:/app/.env
       - ./app.py:/app/app.py:ro
       - ./templates:/app/templates:ro
@@ -87,6 +90,7 @@ services:
       - AUDIO_FOLDER=/audio
       - HLS_PORT=${HLS_PORT:-8080}
       - STATS_DIR=/app/stats
+      - TRIGGER_DIR=/app/trigger
     depends_on:
       nginx-rtmp:
         condition: service_healthy
@@ -113,6 +117,9 @@ services:
     restart: unless-stopped
     networks:
       - video-network
+
+volumes:
+  trigger_volume:
 
 networks:
   video-network:

@@ -22,6 +22,7 @@ CORS(app)
 
 # Configuration
 CHUNK_FOLDER = os.getenv('CHUNK_FOLDER', '/chunks')
+TRIGGER_DIR = os.getenv('TRIGGER_DIR', '').strip() or None
 PORT = int(os.getenv('PORT', '8080'))
 EXTERNAL_PORT = int(os.getenv('EXTERNAL_PORT', str(PORT)))
 HLS_PORT = int(os.getenv('HLS_PORT', '8080'))
@@ -401,7 +402,7 @@ def stream_status():
 
 @app.route('/api/cron-run-history')
 def cron_run_history():
-    """Get chunk-generator cron/manual run history from stats/.cron_run_history"""
+    """Get chunk-generator cron/manual run history from stats/.cron_run_history (paginated)"""
     stats_dir = STATS_DIR or CHUNK_FOLDER
     history_path = os.path.join(stats_dir, '.cron_run_history')
     entries = []
@@ -420,7 +421,19 @@ def cron_run_history():
             entries.reverse()
         except (OSError, ValueError):
             pass
-    return jsonify({'entries': entries[:100]})
+    per_page = min(int(request.args.get('per_page', 20)), 100)
+    page = max(1, int(request.args.get('page', 1)))
+    total = len(entries)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    return jsonify({
+        'entries': entries[start:start + per_page],
+        'page': page,
+        'per_page': per_page,
+        'total': total,
+        'total_pages': total_pages,
+    })
 
 
 def _read_proc_stat_cpu():
@@ -531,8 +544,11 @@ def trigger_generation():
             'success': False,
             'error': 'Chunk generation is already running. Please wait for it to finish.'
         }), 409
-    trigger_file = os.path.join(CHUNK_FOLDER, '.trigger_generation')
+    # Prefer /app/trigger (named volume) when mounted – avoids host permission issues on Proxmox
+    trigger_dir = TRIGGER_DIR or ('/app/trigger' if os.path.isdir('/app/trigger') else None) or STATS_DIR or CHUNK_FOLDER
+    trigger_file = os.path.join(trigger_dir, '.trigger_generation')
     try:
+        os.makedirs(trigger_dir, exist_ok=True)
         with open(trigger_file, 'w') as f:
             f.write('manual\n')
         return jsonify({'success': True, 'message': 'Triggered chunk generation. The chunk-generator container will start processing momentarily.'})
