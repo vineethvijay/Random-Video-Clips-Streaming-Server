@@ -6,8 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Random Video Clips Streaming Server</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231e3a8a'/%3E%3Cpath fill='%2393c5fd' d='M12 9v14l10-7z'/%3E%3Cpath fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-linecap='round' d='M20 11c2 0 3 1.5 3 3s-1 3-3 3m0-6c3 0 5 2 5 5s-2 5-5 5'/%3E%3C/svg%3E">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -64,11 +62,24 @@
 
         <div class="space-y-6">
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden">
-                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center flex-wrap gap-2">
-                        <h2 class="text-xl font-semibold text-white">Generated Video Chunks</h2>
-                        <div class="flex items-center gap-2">
-                            <button type="button" id="btn-skip-next" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm font-medium whitespace-nowrap">Play next</button>
-                            <span class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{ chunks|length }} Chunks</span>
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex flex-col gap-3">
+                        <div class="flex justify-between items-center flex-wrap gap-2">
+                            <h2 class="text-xl font-semibold text-white">Generated Video Chunks</h2>
+                            <div class="flex items-center gap-2">
+                                <button type="button" id="btn-skip-next" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm font-medium whitespace-nowrap">Play next</button>
+                                <span id="chunks-count-badge" class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{ chunks|length }} Chunks</span>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <input type="text" id="chunks-search" placeholder="Filter by filename…" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
+                            <select id="chunks-sort" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
+                                <option value="date-desc">Date (newest first)</option>
+                                <option value="date-asc">Date (oldest first)</option>
+                                <option value="name-asc">Name (A–Z)</option>
+                                <option value="name-desc">Name (Z–A)</option>
+                                <option value="size-desc">Size (largest first)</option>
+                                <option value="size-asc">Size (smallest first)</option>
+                            </select>
                         </div>
                     </div>
                     <div class="p-0 overflow-x-auto">
@@ -118,7 +129,7 @@ Expires: ~{{ m.days_to_expire }} days</div>
                                     </td>
                                 </tr>
                                 {% endif %}
-                                {% for chunk in chunks_excluding_current %}
+                                {% for chunk in chunks_excluding_current[:initial_chunks_limit] %}
                                 <tr data-page="{{ ((loop.index0) // 5) + 1 }}" data-chunk-name="{{ chunk.name }}"
                                     class="chunk-row transition duration-150 hover:bg-gray-700/50">
                                     <td class="py-3 px-6 text-sm text-gray-300">
@@ -214,11 +225,90 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
         (function () {
             const CHUNKS_PER_PAGE = 5;
             const tbody = document.getElementById('chunks-tbody');
-            const rows = tbody ? Array.from(tbody.querySelectorAll('tr.chunk-row[data-page]')) : [];
             const chunksMetadata = {{ chunks | tojson }};
-            const totalPages = document.getElementById('page-total');
-            const total = totalPages ? parseInt(totalPages.textContent, 10) : 1;
+            const totalPagesEl = document.getElementById('page-total');
+            let total = totalPagesEl ? parseInt(totalPagesEl.textContent, 10) : 1;
             let currentPage = 1;
+            const currentChunkExclude = {{ (current_chunk or '') | tojson }};
+            let rows = [];
+            let filteredSortedChunks = [];
+
+            function rowHtmlFromChunk(chunk, page) {
+                var srcContent = (chunk.source_videos && chunk.source_videos.length) ? chunk.source_videos.join('\n') : '';
+                var metaLines = [];
+                if (chunk.video_codec) {
+                    var vid = 'Video: ' + chunk.video_codec;
+                    if (chunk.width && chunk.height) vid += ' ' + chunk.width + 'x' + chunk.height;
+                    metaLines.push(vid);
+                }
+                metaLines.push('Size: ' + (chunk.size_mb != null ? chunk.size_mb + ' MB' : '—'));
+                metaLines.push('Created: ' + (chunk.created_at || '—'));
+                metaLines.push('Expires: ~' + (chunk.days_to_expire != null ? chunk.days_to_expire : '?') + ' days');
+                var metaContent = metaLines.join('\n');
+                var srcCell = srcContent ? '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View sources</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + srcContent + '</div></div>' : '<span class="text-gray-500">—</span>';
+                var metaCell = '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View metadata</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div>';
+                return '<tr data-page="' + page + '" data-chunk-name="' + chunk.name + '" class="chunk-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunk.name + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunk.name + '</span></div></td><td class="py-3 px-6 text-sm text-gray-400 max-w-[200px] align-top">' + srcCell + '</td><td class="py-3 px-6 text-sm text-gray-400 align-top">' + metaCell + '</td></tr>';
+            }
+
+            function getFilteredSortedChunks() {
+                var searchVal = (document.getElementById('chunks-search') || {}).value || '';
+                var sortVal = (document.getElementById('chunks-sort') || {}).value || 'date-desc';
+                var list = (chunksMetadata || []).filter(function(c) { return !currentChunkExclude || c.name !== currentChunkExclude; });
+                if (searchVal.trim()) {
+                    var q = searchVal.toLowerCase().trim();
+                    list = list.filter(function(c) { return (c.name || '').toLowerCase().indexOf(q) >= 0; });
+                }
+                list = list.slice();
+                if (sortVal === 'date-desc') list.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
+                else if (sortVal === 'date-asc') list.sort(function(a, b) { return (a.timestamp || 0) - (b.timestamp || 0); });
+                else if (sortVal === 'name-asc') list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                else if (sortVal === 'name-desc') list.sort(function(a, b) { return (b.name || '').localeCompare(a.name || ''); });
+                else if (sortVal === 'size-desc') list.sort(function(a, b) { return (b.size_mb || 0) - (a.size_mb || 0); });
+                else if (sortVal === 'size-asc') list.sort(function(a, b) { return (a.size_mb || 0) - (b.size_mb || 0); });
+                return list;
+            }
+
+            function applyFilterAndSort() {
+                filteredSortedChunks = getFilteredSortedChunks();
+                total = Math.max(1, Math.ceil(filteredSortedChunks.length / CHUNKS_PER_PAGE));
+                currentPage = Math.min(currentPage, total);
+
+                var nowPlayingRow = tbody ? tbody.querySelector('#chunk-now-playing-row') : null;
+                var chunkRows = tbody ? tbody.querySelectorAll('tr.chunk-row[data-page]') : [];
+                chunkRows.forEach(function(tr) { tr.remove(); });
+
+                var emptyRow = tbody ? tbody.querySelector('tr td[colspan="3"]') : null;
+                if (emptyRow && emptyRow.closest('tr')) emptyRow.closest('tr').remove();
+
+                var insertAfter = nowPlayingRow || (tbody ? tbody.firstChild : null);
+                if (filteredSortedChunks.length === 0) {
+                    var searchVal = (document.getElementById('chunks-search') || {}).value || '';
+                    var msg = searchVal.trim() ? 'No matching chunks.' : ((chunksMetadata || []).length === 0 ? 'No chunks found in the chunks folder.' : 'No other chunks.');
+                    var tr = document.createElement('tr');
+                    tr.innerHTML = '<td colspan="3" class="py-8 text-center text-gray-500">' + msg + '</td>';
+                    if (insertAfter) insertAfter.after(tr);
+                    else if (tbody) tbody.appendChild(tr);
+                } else {
+                    var temp = document.createElement('tbody');
+                    temp.innerHTML = filteredSortedChunks.map(function(chunk, i) {
+                        var page = Math.floor(i / CHUNKS_PER_PAGE) + 1;
+                        return rowHtmlFromChunk(chunk, page);
+                    }).join('');
+                    var frag = document.createDocumentFragment();
+                    while (temp.firstChild) frag.appendChild(temp.firstChild);
+                    if (insertAfter) insertAfter.after(frag);
+                    else if (tbody) tbody.appendChild(frag);
+                }
+
+                rows = tbody ? Array.from(tbody.querySelectorAll('tr.chunk-row[data-page]')) : [];
+                var badge = document.getElementById('chunks-count-badge');
+                if (badge) {
+                    var totalCount = (chunksMetadata || []).filter(function(c) { return !currentChunkExclude || c.name !== currentChunkExclude; }).length;
+                    badge.textContent = filteredSortedChunks.length === totalCount ? totalCount + ' Chunks' : filteredSortedChunks.length + ' of ' + totalCount + ' Chunks';
+                }
+                if (totalPagesEl) totalPagesEl.textContent = total;
+                showPage(currentPage);
+            }
 
             function showPage(page) {
                 currentPage = Math.max(1, Math.min(page, total));
@@ -228,9 +318,10 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                 });
                 var curEl = document.getElementById('page-current');
                 if (curEl) curEl.textContent = currentPage;
-                document.getElementById('btn-prev').disabled = currentPage <= 1;
-                document.getElementById('btn-next').disabled = currentPage >= total;
-                // Update page number buttons
+                var btnPrev = document.getElementById('btn-prev');
+                var btnNext = document.getElementById('btn-next');
+                if (btnPrev) btnPrev.disabled = currentPage <= 1;
+                if (btnNext) btnNext.disabled = currentPage >= total;
                 var container = document.getElementById('page-buttons');
                 if (container) {
                     container.innerHTML = '';
@@ -415,11 +506,18 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                         if (audioName) updateNowPlayingAudio(audioName, startedAt, duration, audioPos, audioTrackDur);
                     }).catch(function () {});
                 }
-            if (rows.length > 0 && total >= 1) {
-                showPage(1);
-                document.getElementById('btn-prev').addEventListener('click', function () { showPage(currentPage - 1); });
-                document.getElementById('btn-next').addEventListener('click', function () { showPage(currentPage + 1); });
+            applyFilterAndSort();
+            var btnPrev = document.getElementById('btn-prev');
+            var btnNext = document.getElementById('btn-next');
+            var searchEl = document.getElementById('chunks-search');
+            var sortEl = document.getElementById('chunks-sort');
+            if (btnPrev) btnPrev.addEventListener('click', function () { showPage(currentPage - 1); });
+            if (btnNext) btnNext.addEventListener('click', function () { showPage(currentPage + 1); });
+            if (searchEl) {
+                searchEl.addEventListener('input', function() { applyFilterAndSort(); });
+                searchEl.addEventListener('keyup', function(e) { if (e.key === 'Escape') { this.value = ''; applyFilterAndSort(); } });
             }
+            if (sortEl) sortEl.addEventListener('change', function() { applyFilterAndSort(); });
 
                 var initial = {{ (initial_stream_status or {}) | tojson }};
                 if (initial.current_chunk) updateNowPlaying(initial.current_chunk, initial.current_chunk_started_at, initial.current_chunk_duration);
@@ -470,62 +568,70 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             }
         });
 
-        // Live stream collapse/expand
+        // Live stream collapse/expand – load HLS.js only when expanded
         (function () {
             const card = document.getElementById('stream-player-card');
             const toggle = card && card.querySelector('.stream-player-toggle');
             const chevron = card && card.querySelector('.stream-player-chevron');
+            let hlsLoaded = false;
+            function initHlsPlayer() {
+                if (hlsLoaded) return;
+                hlsLoaded = true;
+                const video = document.getElementById('stream-player');
+                const statusEl = document.getElementById('stream-player-status');
+                const streamUrl = card.getAttribute('data-hls-url');
+                if (!video || !statusEl || !streamUrl) return;
+                function setStatus(text, isError) {
+                    statusEl.textContent = text;
+                    statusEl.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400');
+                }
+                var playStateEl = document.getElementById('stream-player-play-state');
+                if (playStateEl) {
+                    video.addEventListener('play', function () { playStateEl.textContent = 'Playing'; playStateEl.title = 'Playing'; });
+                    video.addEventListener('pause', function () { playStateEl.textContent = 'Paused'; playStateEl.title = 'Paused'; });
+                }
+                function attachHls() {
+                    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                        const hls = new Hls({ enableWorker: true });
+                        hls.loadSource(streamUrl);
+                        hls.attachMedia(video);
+                        hls.on(Hls.Events.MANIFEST_PARSED, function () { setStatus('Live'); });
+                        hls.on(Hls.Events.ERROR, function (e, data) {
+                            if (data.fatal) {
+                                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setStatus('Network error – is the stream up?', true);
+                                else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setStatus('Media error', true);
+                                else setStatus('Error', true);
+                            }
+                        });
+                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        video.src = streamUrl;
+                        setStatus('Live');
+                    } else {
+                        setStatus('HLS not supported in this browser', true);
+                    }
+                }
+                if (typeof Hls !== 'undefined') {
+                    attachHls();
+                } else {
+                    const s = document.createElement('script');
+                    s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.7';
+                    s.onload = attachHls;
+                    document.head.appendChild(s);
+                }
+            }
             if (toggle && chevron) {
                 toggle.addEventListener('click', function () {
                     card.classList.toggle('collapsed');
                     chevron.textContent = card.classList.contains('collapsed') ? '▶' : '▼';
+                    if (!card.classList.contains('collapsed')) initHlsPlayer();
                 });
                 if (card.classList.contains('collapsed')) chevron.textContent = '▶';
-                else chevron.textContent = '▼';
-            }
-        })();
-
-        // HLS.js live stream player (nginx-rtmp HLS)
-        (function () {
-            const card = document.getElementById('stream-player-card');
-            const video = document.getElementById('stream-player');
-            const statusEl = document.getElementById('stream-player-status');
-            if (!card || !video || !statusEl) return;
-            const streamUrl = card.getAttribute('data-hls-url');
-            if (!streamUrl) return;
-
-            function setStatus(text, isError) {
-                statusEl.textContent = text;
-                statusEl.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400');
-            }
-
-            var playStateEl = document.getElementById('stream-player-play-state');
-            if (playStateEl) {
-                video.addEventListener('play', function () { playStateEl.textContent = 'Playing'; playStateEl.title = 'Playing'; });
-                video.addEventListener('pause', function () { playStateEl.textContent = 'Paused'; playStateEl.title = 'Paused'; });
-            }
-
-            if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-                const hls = new Hls({ enableWorker: true });
-                hls.loadSource(streamUrl);
-                hls.attachMedia(video);
-                hls.on(Hls.Events.MANIFEST_PARSED, function () { setStatus('Live'); });
-                hls.on(Hls.Events.ERROR, function (e, data) {
-                    if (data.fatal) {
-                        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setStatus('Network error – is the stream up?', true);
-                        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setStatus('Media error', true);
-                        else setStatus('Error', true);
-                    }
-                });
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                video.src = streamUrl;
-                setStatus('Live');
-            } else {
-                setStatus('HLS not supported in this browser', true);
+                else { chevron.textContent = '▼'; initHlsPlayer(); }
             }
         })();
 
     </script>
+    <script src="https://cdn.tailwindcss.com" defer></script>
 </body>
 
 </html>

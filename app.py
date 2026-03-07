@@ -44,19 +44,17 @@ clip_pusher = ClipPusher(CHUNK_FOLDER, RTMP_URL,
                          audio_folder=AUDIO_FOLDER if AUDIO_FOLDER else None,
                          stats_dir=STATS_DIR)
 
-@app.route('/')
-def index():
-    """Root endpoint - renders the UI dashboard"""
-    current_status = clip_pusher.get_status()
-    current_chunk = current_status.get('current_chunk')
-    
-    # Read chunks
-    import os
+INITIAL_CHUNKS_LIMIT = 20
+
+
+def _build_chunks_list(settings=None):
+    """Build chunks list (no ffprobe). settings used for days_to_expire."""
     from datetime import datetime
-    
+    import json as _json
+    import math
+    settings = settings or {}
     chunks = []
     if os.path.exists(CHUNK_FOLDER):
-        import json as _json
         for f in os.listdir(CHUNK_FOLDER):
             if f.endswith('.mp4') and not f.startswith('chunk_temp'):
                 filepath = os.path.join(CHUNK_FOLDER, f)
@@ -78,30 +76,6 @@ def index():
                             created_at_str = meta.get('created_at')
                     except (ValueError, OSError):
                         pass
-                # Fallback: run ffprobe for chunks missing codec/resolution in meta (e.g. older chunks)
-                if (video_codec is None or width is None or height is None) and os.path.isfile(filepath):
-                    try:
-                        import subprocess
-                        if video_codec is None:
-                            out = subprocess.run(
-                                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                                 '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', filepath],
-                                capture_output=True, text=True, timeout=5)
-                            if out.returncode == 0 and out.stdout.strip():
-                                video_codec = out.stdout.strip()
-                        if width is None or height is None:
-                            out = subprocess.run(
-                                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                                 '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', filepath],
-                                capture_output=True, text=True, timeout=5)
-                            if out.returncode == 0 and out.stdout.strip():
-                                parts = out.stdout.strip().split('x')
-                                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-                                    width = int(parts[0])
-                                    height = int(parts[1])
-                    except (subprocess.TimeoutExpired, OSError, ValueError):
-                        pass
-                # Use created_at from meta.json (real creation time); fallback to st_ctime for older chunks
                 if created_at_str:
                     try:
                         dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
@@ -123,9 +97,34 @@ def index():
                     'width': width,
                     'height': height,
                 })
-    
-    # Sort chunks by newest first (oldest last)
     chunks.sort(key=lambda x: x['timestamp'], reverse=True)
+    if chunks:
+        max_chunks = int(settings.get('MAX_CHUNKS', '56'))
+        chunks_per_run = int(settings.get('CHUNKS_PER_RUN', '4'))
+        for i, chunk in enumerate(chunks):
+            remaining_till_expiry = max(0, max_chunks - i)
+            chunk['days_to_expire'] = math.ceil(remaining_till_expiry / chunks_per_run)
+    return chunks
+
+
+@app.route('/')
+def index():
+    """Root endpoint - renders the UI dashboard"""
+    current_status = clip_pusher.get_status()
+    current_chunk = current_status.get('current_chunk')
+
+    # Parse .env for settings (needed for chunks)
+    settings = {}
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, val = line.split('=', 1)
+                    settings[key] = val
+
+    chunks = _build_chunks_list(settings)
 
     # List audio files (same extensions as clip_pusher)
     audio_files = []
@@ -147,28 +146,6 @@ def index():
         audio_files.sort(key=lambda x: x['name'].lower())
 
     current_audio = current_status.get('current_audio')
-
-    # Parse .env settings explicitly for the UI to display/edit
-    settings = {}
-    env_path = os.path.join(os.path.dirname(__file__), '.env')
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as file:
-            for line in file:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, val = line.split('=', 1)
-                    settings[key] = val
-
-    # Calculate expiration estimate for all chunks
-    if chunks:
-        import math
-        max_chunks = int(settings.get('MAX_CHUNKS', '56'))
-        chunks_per_run = int(settings.get('CHUNKS_PER_RUN', '4'))
-        
-        for i, chunk in enumerate(chunks):
-            # chunks are newest-first; oldest (high index) expires first
-            remaining_till_expiry = max(0, max_chunks - i)
-            chunk['days_to_expire'] = math.ceil(remaining_till_expiry / chunks_per_run)
 
     # Gather System Information
     import platform
@@ -259,7 +236,7 @@ def index():
     }
     current_chunk_data = next((c for c in chunks if c['name'] == current_chunk), None) if current_chunk else None
     chunks_excluding_current = [c for c in chunks if c['name'] != current_chunk]
-    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats)
+    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
 
 
 def _admin_context():
@@ -398,6 +375,28 @@ def status():
 def stream_status():
     """Get RTMP stream pusher status"""
     return jsonify(clip_pusher.get_status())
+
+
+@app.route('/api/chunks')
+def api_chunks():
+    """Get chunks with pagination (offset, limit). Used for loading more chunks on dashboard."""
+    settings = {}
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, val = line.split('=', 1)
+                    settings[key] = val
+    chunks = _build_chunks_list(settings)
+    exclude = request.args.get('exclude', '').strip()
+    if exclude:
+        chunks = [c for c in chunks if c['name'] != exclude]
+    offset = max(0, int(request.args.get('offset', 0)))
+    limit = min(100, max(1, int(request.args.get('limit', 20))))
+    page_chunks = chunks[offset:offset + limit]
+    return jsonify({'chunks': page_chunks, 'total': len(chunks)})
 
 
 @app.route('/api/cron-run-history')
