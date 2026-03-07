@@ -24,10 +24,13 @@
         .stream-player-title { color: rgb(74, 222, 128); animation: stream-title-blink 2s ease-in-out infinite; }
         .stream-player-play-state-text { color: rgb(251, 146, 60); animation: stream-title-blink 2s ease-in-out infinite; }
         @keyframes stream-title-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .toast-popup { animation: toast-fade-in 0.2s ease-out; }
+        @keyframes toast-fade-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 
 <body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div id="toast-container" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col items-center gap-2"></div>
     <div class="max-w-6xl mx-auto px-4 py-8">
         <!-- Header -->
         <header class="mb-8 flex justify-between items-end border-b border-gray-700 pb-4">
@@ -53,6 +56,8 @@ class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shado
                         <a href="/api/system-usage" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/system-usage</a>
                         <a href="/api/skip_to_next" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/skip_to_next</a>
                         <a href="/api/generate_chunk" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/generate_chunk</a>
+                        <a href="/api/update_settings" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/update_settings</a>
+                        <a href="/api/restart_chunk_generator" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/restart_chunk_generator</a>
                         <a href="/api/stop_generation" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/stop_generation</a>
                         <span class="block px-4 py-2 text-xs text-gray-500 border-t border-gray-700 mt-1 pt-2">GET /chunks/&lt;filename&gt; — chunk file</span>
                     </div>
@@ -228,52 +233,81 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
 
             <!-- Right Column: Settings + System Information -->
             <div class="space-y-6">
-                <div class="bg-gray-800 rounded-lg shadow border border-gray-700">
-                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800">
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700" id="config-section">
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex items-center justify-between">
                         <h2 class="text-xl font-semibold text-white">Server Configuration</h2>
+                        <button type="button" id="btn-edit-config" class="text-sm font-medium text-indigo-400 hover:text-indigo-300">Edit</button>
                     </div>
                     <div class="p-6">
                         <div class="space-y-4">
                             <div>
                                 <label class="block text-sm font-medium text-gray-400 mb-1">Max Chunks to Keep</label>
-                                <input type="number" readonly value="{{ settings.get('MAX_CHUNKS', '56') }}"
-                                    class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                <input type="number" id="setting-max-chunks" readonly value="{{ settings.get('MAX_CHUNKS', '56') }}"
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
                             </div>
 
                             <div>
                                 <label class="block text-sm font-medium text-gray-400 mb-1">Target Chunk Duration
                                     (s)</label>
-                                <input type="number" readonly value="{{ settings.get('CHUNK_DURATION', '300') }}"
-                                    class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                <input type="number" id="setting-chunk-duration" readonly value="{{ settings.get('CHUNK_DURATION', '300') }}"
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
                             </div>
 
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
                                     <label class="block text-sm font-medium text-gray-400 mb-1">Min Clip Length (Sec)</label>
-                                    <input type="number" readonly value="{{ settings.get('CLIP_MIN', '6') }}"
-                                        class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                    <input type="number" id="setting-clip-min" readonly value="{{ settings.get('CLIP_MIN', '6') }}"
+                                        class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
                                 </div>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-400 mb-1">Max Clip Length (Sec)</label>
-                                    <input type="number" readonly value="{{ settings.get('CLIP_MAX', '6') }}"
-                                        class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                    <input type="number" id="setting-clip-max" readonly value="{{ settings.get('CLIP_MAX', '6') }}"
+                                        class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
                                 </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Chunks per Run</label>
+                                <input type="number" id="setting-chunks-per-run" readonly min="1" max="20" value="{{ settings.get('CHUNKS_PER_RUN', '4') }}"
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed"
+                                    title="Number of chunks generated per cron/manual trigger">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Chunk generation Cron Schedule</label>
+                                <input type="text" id="setting-cron-schedule" readonly value="{{ settings.get('CRON_SCHEDULE', '0 2 * * *') }}"
+                                    placeholder="0 2 * * * (2am daily)"
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed font-mono text-sm"
+                                    title="Crontab format. Empty = disabled">
+                                <p class="text-xs text-gray-500 mt-1">Empty = disabled. Examples: <code>0 2 * * *</code> 2am daily, <code>0 */6 * * *</code> every 6h</p>
                             </div>
 
                             <div>
                                 <label class="block text-sm font-medium text-gray-400 mb-1">Hardware
                                     Acceleration</label>
-                                <input type="text" readonly
-                                    value="{% if settings.get('HW_ACCEL') == 'nvidia' %}NVIDIA GPU Acceleration{% else %}None (CPU Encoding){% endif %}"
-                                    class="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                {% if not sys_info.nvidia_available %}
+                                <p class="text-xs text-amber-500/90 mb-2">NVIDIA GPU not detected on this system. Only CPU encoding is available.</p>
+                                {% endif %}
+                                <select id="setting-hw-accel" disabled
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                    <option value="none" {% if settings.get('HW_ACCEL') != 'nvidia' or not sys_info.nvidia_available %}selected{% endif %}>None (CPU Encoding)</option>
+                                    {% if sys_info.nvidia_available %}
+                                    <option value="nvidia" {% if settings.get('HW_ACCEL') == 'nvidia' %}selected{% endif %}>NVIDIA GPU Acceleration</option>
+                                    {% endif %}
+                                </select>
+                            </div>
+
+                            <div class="flex flex-wrap gap-2 items-center">
+                                <div class="inline-flex gap-2 rounded-lg border border-gray-600 bg-gray-800/80 px-3 py-2">
+                                    <button type="button" id="btn-save-settings" disabled class="bg-indigo-600/50 text-gray-400 cursor-not-allowed px-4 py-2 rounded text-sm font-medium">Save Settings</button>
+                                    <button type="button" id="btn-restart-chunk-gen" class="bg-amber-700 hover:bg-amber-600 text-amber-100 px-4 py-2 rounded text-sm font-medium" title="Restart chunk-generator to apply changes">Restart chunk-generator</button>
+                                </div>
+                                <span id="settings-save-status" class="text-sm text-gray-500 self-center"></span>
                             </div>
                         </div>
                         <div class="mt-6 pt-4 border-t border-gray-700">
                             <p class="text-sm text-gray-400">
-                                <strong class="text-gray-300">Read-only.</strong> Settings are loaded from the
-                                <code class="bg-gray-900 px-1 rounded border border-gray-700">.env</code> file. To change:
-                                edit <code class="bg-gray-900 px-1 rounded border border-gray-700">.env</code> on the host
-                                and restart the server.
+                                Click <strong class="text-gray-300">Edit</strong> to change settings. Restart chunk-generator after saving.
                             </p>
                         </div>
                     </div>
@@ -311,7 +345,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                             <span class="font-mono text-right">{{ sys_info.cpu_cores }} cores · <span id="live-cpu" class="text-cyan-400">—</span></span>
                         </li>
                         <li class="flex justify-between border-b border-gray-700 pb-2">
-                            <span class="text-gray-500">Memory (live)</span>
+                            <span class="text-gray-500">Memory</span>
                             <span id="live-mem" class="font-mono text-right">—</span>
                         </li>
                         <li class="flex justify-between border-b border-gray-700 pb-2" id="live-gpu-row" style="display: none;">
@@ -677,6 +711,113 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             });
         })();
 
+        document.getElementById('btn-restart-chunk-gen').addEventListener('click', async function () {
+            const btn = document.getElementById('btn-restart-chunk-gen');
+            const status = document.getElementById('settings-save-status');
+            btn.disabled = true;
+            status.textContent = 'Restarting…';
+            status.className = 'text-sm text-gray-400 self-center';
+            try {
+                const res = await fetch('/api/restart_chunk_generator', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = 'Restarted.';
+                    status.className = 'text-sm text-green-400 self-center';
+                } else {
+                    status.textContent = data.error || 'Failed';
+                    status.className = 'text-sm text-red-400 self-center';
+                }
+            } catch (e) {
+                status.textContent = 'Error: ' + e.message;
+                status.className = 'text-sm text-red-400 self-center';
+            }
+            btn.disabled = false;
+            setTimeout(function () { status.textContent = ''; }, 4000);
+        });
+
+        (function () {
+            const section = document.getElementById('config-section');
+            const editBtn = document.getElementById('btn-edit-config');
+            const saveBtn = document.getElementById('btn-save-settings');
+            const inputs = section.querySelectorAll('.config-input');
+            const readonlyClasses = ['bg-gray-900/50', 'border-gray-700', 'text-gray-500', 'cursor-not-allowed'];
+            const editableClasses = ['bg-gray-800', 'border-gray-600', 'text-gray-200'];
+
+            function setEditMode(editing) {
+                section.dataset.editMode = editing ? '1' : '0';
+                editBtn.textContent = editing ? 'Cancel' : 'Edit';
+                saveBtn.disabled = !editing;
+                saveBtn.classList.toggle('bg-indigo-600/50', !editing);
+                saveBtn.classList.toggle('text-gray-400', !editing);
+                saveBtn.classList.toggle('cursor-not-allowed', !editing);
+                saveBtn.classList.toggle('bg-indigo-600', editing);
+                saveBtn.classList.toggle('hover:bg-indigo-500', editing);
+                saveBtn.classList.toggle('text-white', editing);
+                inputs.forEach(function (el) {
+                    if (el.tagName === 'SELECT') {
+                        el.disabled = !editing;
+                    } else {
+                        el.readOnly = !editing;
+                    }
+                    el.classList.remove(...readonlyClasses, ...editableClasses);
+                    el.classList.add(...(editing ? editableClasses : readonlyClasses));
+                });
+            }
+
+            editBtn.addEventListener('click', function () {
+                setEditMode(section.dataset.editMode !== '1');
+            });
+        })();
+
+        document.getElementById('btn-save-settings').addEventListener('click', async function () {
+            const btn = document.getElementById('btn-save-settings');
+            const status = document.getElementById('settings-save-status');
+            const payload = {
+                MAX_CHUNKS: document.getElementById('setting-max-chunks').value.trim() || '56',
+                CHUNK_DURATION: document.getElementById('setting-chunk-duration').value.trim() || '300',
+                CLIP_MIN: document.getElementById('setting-clip-min').value.trim() || '6',
+                CLIP_MAX: document.getElementById('setting-clip-max').value.trim() || '6',
+                CHUNKS_PER_RUN: document.getElementById('setting-chunks-per-run').value.trim() || '4',
+                CRON_SCHEDULE: document.getElementById('setting-cron-schedule').value.trim(),
+                HW_ACCEL: document.getElementById('setting-hw-accel').value || 'none'
+            };
+            btn.disabled = true;
+            status.textContent = 'Saving…';
+            try {
+                const res = await fetch('/api/update_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = 'Saved. Click Restart chunk-generator to apply.';
+                    status.className = 'text-sm text-green-400 self-center';
+                } else {
+                    status.textContent = data.error || 'Failed';
+                    status.className = 'text-sm text-red-400 self-center';
+                }
+            } catch (e) {
+                status.textContent = 'Error: ' + e.message;
+                status.className = 'text-sm text-red-400 self-center';
+            }
+            btn.disabled = false;
+            setTimeout(function () { status.textContent = ''; }, 5000);
+        });
+
+        function showToast(message, durationMs) {
+            const container = document.getElementById('toast-container');
+            const el = document.createElement('div');
+            el.className = 'toast-popup bg-gray-800 border border-gray-600 text-gray-200 px-4 py-3 rounded-lg shadow-xl text-sm max-w-sm text-center';
+            el.textContent = message;
+            container.appendChild(el);
+            setTimeout(function () {
+                el.style.opacity = '0';
+                el.style.transition = 'opacity 0.2s';
+                setTimeout(function () { el.remove(); }, 200);
+            }, durationMs || 4000);
+        }
+
         document.getElementById('btn-skip-next').addEventListener('click', async () => {
             const btn = document.getElementById('btn-skip-next');
             const orig = btn.textContent;
@@ -687,6 +828,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                 const data = await res.json();
                 if (data.success) {
                     if (data.skipped) {
+                        showToast('Switched to next video. It may take a few seconds to appear in the live stream.');
                         btn.textContent = 'Next';
                         setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
                     } else {

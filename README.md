@@ -157,6 +157,7 @@ These variables control how new video chunks are created from your library.
 | `CLIP_MAX` | `6` | Maximum length of an individual clip within a chunk |
 | `CHUNKS_PER_RUN` | `4` | How many chunks to generate per execution |
 | `MAX_CHUNKS` | `56` | Max number of chunks to keep before pruning oldest |
+| `CRON_SCHEDULE` | `0 2 * * *` | Cron schedule for automatic generation (2am daily). Set empty to disable. |
 | `VIDEO_DIR` | `/videos` | Where the generator searches for `.mp4`, `.mkv`, `.avi` |
 | `OUTPUT_DIR` | `/chunks` | Where the generator writes the final chunks |
 
