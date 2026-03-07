@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin — Random Video Clips Streaming Server</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231e3a8a'/%3E%3Cpath fill='%2393c5fd' d='M12 9v14l10-7z'/%3E%3Cpath fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-linecap='round' d='M20 11c2 0 3 1.5 3 3s-1 3-3 3m0-6c3 0 5 2 5 5s-2 5-5 5'/%3E%3C/svg%3E">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>body { font-family: 'Inter', sans-serif; }</style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div class="max-w-2xl mx-auto px-4 py-8">
+        <header class="mb-8 flex justify-between items-end border-b border-gray-700 pb-4">
+            <div>
+                <h1 class="text-3xl font-bold text-white mb-3">Admin</h1>
+                <nav class="flex gap-2">
+                    <a href="/" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Dashboard</a>
+                    <a href="/admin" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded font-medium text-sm">Admin</a>
+                </nav>
+            </div>
+            <div class="flex gap-2">
+                <button id="btn-generate" class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition font-medium whitespace-nowrap">Generate Chunks</button>
+                <div class="relative">
+                    <button id="btn-api-list" type="button" class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition whitespace-nowrap flex items-center gap-1">
+                        API List <span class="api-list-chevron text-xs opacity-80">▼</span>
+                    </button>
+                    <div id="api-list-dropdown" class="hidden absolute right-0 top-full mt-1 py-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50">
+                        <a href="/" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET / (Dashboard)</a>
+                        <a href="/admin" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /admin</a>
+                        <a href="/iptv.m3u" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /iptv.m3u</a>
+                        <a href="/api/status" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/status</a>
+                        <a href="/api/stream-status" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/stream-status</a>
+                        <a href="/api/system-usage" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/system-usage</a>
+                        <a href="/api/skip_to_next" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/skip_to_next</a>
+                        <a href="/api/generate_chunk" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/generate_chunk</a>
+                        <a href="/api/update_settings" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/update_settings</a>
+                        <a href="/api/restart_chunk_generator" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/restart_chunk_generator</a>
+                        <a href="/api/stop_generation" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/stop_generation</a>
+                        <span class="block px-4 py-2 text-xs text-gray-500 border-t border-gray-700 mt-1 pt-2">GET /chunks/&lt;filename&gt; — chunk file</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="space-y-6">
+            <!-- Server Configuration -->
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700" id="config-section">
+                <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex items-center justify-between">
+                    <h2 class="text-xl font-semibold text-white">Server Configuration</h2>
+                    <button type="button" id="btn-edit-config" class="text-sm font-medium text-indigo-400 hover:text-indigo-300">Edit</button>
+                </div>
+                <div class="p-6">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">Max Chunks to Keep</label>
+                            <input type="number" id="setting-max-chunks" readonly value="{{ settings.get('MAX_CHUNKS', '56') }}"
+                                class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">Target Chunk Duration (s)</label>
+                            <input type="number" id="setting-chunk-duration" readonly value="{{ settings.get('CHUNK_DURATION', '300') }}"
+                                class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Min Clip Length (Sec)</label>
+                                <input type="number" id="setting-clip-min" readonly value="{{ settings.get('CLIP_MIN', '6') }}"
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Max Clip Length (Sec)</label>
+                                <input type="number" id="setting-clip-max" readonly value="{{ settings.get('CLIP_MAX', '6') }}"
+                                    class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">Chunks per Run</label>
+                            <input type="number" id="setting-chunks-per-run" readonly min="1" max="20" value="{{ settings.get('CHUNKS_PER_RUN', '4') }}"
+                                class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">Chunk generation Cron Schedule</label>
+                            <input type="text" id="setting-cron-schedule" readonly value="{{ settings.get('CRON_SCHEDULE', '0 2 * * *') }}"
+                                placeholder="0 2 * * *" class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed font-mono text-sm">
+                            <p class="text-xs text-gray-500 mt-1">Empty = disabled. Examples: <code>0 2 * * *</code> 2am daily, <code>0 */6 * * *</code> every 6h</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">Hardware Acceleration</label>
+                            {% if not sys_info.nvidia_available %}
+                            <p class="text-xs text-amber-500/90 mb-2">NVIDIA GPU not detected on this system. Only CPU encoding is available.</p>
+                            {% endif %}
+                            <select id="setting-hw-accel" disabled
+                                class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
+                                <option value="none" {% if settings.get('HW_ACCEL') != 'nvidia' or not sys_info.nvidia_available %}selected{% endif %}>None (CPU Encoding)</option>
+                                {% if sys_info.nvidia_available %}
+                                <option value="nvidia" {% if settings.get('HW_ACCEL') == 'nvidia' %}selected{% endif %}>NVIDIA GPU Acceleration</option>
+                                {% endif %}
+                            </select>
+                        </div>
+                        <div class="flex flex-wrap gap-2 items-center">
+                            <div class="inline-flex gap-2 rounded-lg border border-gray-600 bg-gray-800/80 px-3 py-2">
+                                <button type="button" id="btn-save-settings" disabled class="bg-indigo-600/50 text-gray-400 cursor-not-allowed px-4 py-2 rounded text-sm font-medium">Save Settings</button>
+                                <button type="button" id="btn-restart-chunk-gen" class="bg-amber-700 hover:bg-amber-600 text-amber-100 px-4 py-2 rounded text-sm font-medium">Restart chunk-generator</button>
+                            </div>
+                            <span id="settings-save-status" class="text-sm text-gray-500 self-center"></span>
+                        </div>
+                    </div>
+                    <div class="mt-6 pt-4 border-t border-gray-700">
+                        <p class="text-sm text-gray-400">Click <strong class="text-gray-300">Edit</strong> to change settings. Restart chunk-generator after saving.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stream Stats -->
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Stream Stats</h3>
+                <ul class="space-y-4 text-sm text-gray-300">
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">Hours played</span>
+                        <span class="font-mono">{{ stream_stats.hours_played if stream_stats.hours_played is not none else '—' }}</span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">Chunks pushed (this process)</span>
+                        <span class="font-mono">{{ stream_stats.chunks_pushed if stream_stats.chunks_pushed is not none else '—' }}</span>
+                    </li>
+                    <li class="flex justify-between pb-1">
+                        <span class="text-gray-500">Chunks ever created</span>
+                        <span class="font-mono">{{ stream_stats.chunks_created_total if stream_stats.chunks_created_total is not none else '—' }}</span>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Cron run history -->
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Cron run history</h3>
+                <p class="text-xs text-gray-500 mb-2">Chunk generation triggers (cron schedule or manual). Stored in stats/.cron_run_history</p>
+                <ul id="cron-history-list" class="space-y-1 text-sm text-gray-300 max-h-40 overflow-y-auto">
+                    <li class="text-gray-500">Loading…</li>
+                </ul>
+            </div>
+
+            <!-- System Information -->
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">System Information</h3>
+                <ul class="space-y-4 text-sm text-gray-300">
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">OS (Container)</span>
+                        <span class="font-mono text-right max-w-[60%]">{{ sys_info.os }} {% if sys_info.docker == 'Yes' %}(Docker){% endif %}</span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">CPU</span>
+                        <span class="font-mono text-right">{{ sys_info.cpu_cores }} cores · <span id="live-cpu" class="text-cyan-400">—</span></span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">Memory</span>
+                        <span id="live-mem" class="font-mono text-right">—</span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2" id="live-gpu-row" style="display: none;">
+                        <span class="text-gray-500">GPU (live)</span>
+                        <span id="live-gpu" class="font-mono">—</span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">Chunks disk</span>
+                        <span class="font-mono">
+                            {% if sys_info.chunks_total_mb >= 1024 %}{{ "%.1f"|format(sys_info.chunks_total_mb / 1024) }} GB
+                            {% else %}{{ sys_info.chunks_total_mb }} MB{% endif %}
+                            ({{ sys_info.chunks_count }} chunks)
+                        </span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">Disk (chunk dir mount)</span>
+                        <span class="font-mono text-right">
+                            {% if sys_info.chunk_mount_total_mb is not none %}
+                            {% if sys_info.chunk_mount_total_mb >= 1024 %}{{ "%.1f"|format(sys_info.chunk_mount_total_mb / 1024) }} GB{% else %}{{ sys_info.chunk_mount_total_mb }} MB{% endif %}
+                            {% if sys_info.chunk_mount_available_mb is not none %} · {{ sys_info.chunk_mount_available_mb | int if sys_info.chunk_mount_available_mb < 1024 else "%.1f"|format(sys_info.chunk_mount_available_mb / 1024) }}{{ ' MB' if sys_info.chunk_mount_available_mb < 1024 else ' GB' }} free{% endif %}
+                            {% else %}—{% endif %}
+                        </span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500">Hardware Accel</span>
+                        <span class="font-mono">{% if sys_info.hw_accel == 'nvidia' %}<span class="text-green-400">NVIDIA GPU</span>{% else %}None (CPU){% endif %}</span>
+                    </li>
+                    <li class="flex justify-between border-b border-gray-700 pb-2">
+                        <span class="text-gray-500 flex-shrink-0 mr-4">Video Folder</span>
+                        <span class="font-mono break-all text-right">{{ settings.get('VIDEO_FOLDER', '/videos') }}</span>
+                    </li>
+                    <li class="flex justify-between pb-1">
+                        <span class="text-gray-500 flex-shrink-0 mr-4">Audio Folder</span>
+                        <span class="font-mono break-all text-right">{{ settings.get('AUDIO_FOLDER', '(none)') }}</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            const btn = document.getElementById('btn-api-list');
+            const dropdown = document.getElementById('api-list-dropdown');
+            const chevron = btn && btn.querySelector('.api-list-chevron');
+            if (!btn || !dropdown) return;
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                dropdown.classList.toggle('hidden');
+                if (chevron) chevron.textContent = dropdown.classList.contains('hidden') ? '▼' : '▲';
+            });
+            document.addEventListener('click', function () {
+                dropdown.classList.add('hidden');
+                if (chevron) chevron.textContent = '▼';
+            });
+        })();
+
+        (function () {
+            const btn = document.getElementById('btn-generate');
+            if (!btn) return;
+            const defaultHtml = 'Generate Chunks';
+            const inProgressHtml = 'Generation in progress.. Cancel ?';
+            let generationInProgress = false;
+            let stopSent = false;
+
+            function setGenerateButton(inProgress, text) {
+                if (stopSent) return;
+                generationInProgress = inProgress;
+                btn.disabled = false;
+                btn.innerHTML = text || (inProgress ? inProgressHtml : defaultHtml);
+                if (inProgress) {
+                    btn.classList.remove('bg-indigo-900', 'hover:bg-indigo-700', 'text-indigo-200');
+                    btn.classList.add('bg-amber-800', 'hover:bg-amber-700', 'text-amber-200');
+                } else {
+                    btn.classList.remove('bg-amber-800', 'hover:bg-amber-700', 'text-amber-200');
+                    btn.classList.add('bg-indigo-900', 'hover:bg-indigo-700', 'text-indigo-200');
+                }
+            }
+
+            setInterval(function () {
+                if (stopSent) return;
+                fetch('/api/status').then(function (r) { return r.json(); }).then(function (data) {
+                    if (data.generation_in_progress) setGenerateButton(true, inProgressHtml);
+                    else setGenerateButton(false, defaultHtml);
+                }).catch(function () {});
+            }, 8000);
+            fetch('/api/status').then(function (r) { return r.json(); }).then(function (data) {
+                if (data.generation_in_progress) setGenerateButton(true, inProgressHtml);
+            }).catch(function () {});
+
+            btn.addEventListener('click', async () => {
+                if (generationInProgress) {
+                    btn.disabled = true;
+                    btn.innerHTML = 'Stopping…';
+                    try {
+                        const res = await fetch('/api/stop_generation', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            stopSent = true;
+                            btn.innerHTML = 'Stop sent';
+                            setTimeout(function () { window.location.reload(); }, 1500);
+                        } else {
+                            alert(data.error || 'Failed to stop generation.');
+                            btn.disabled = false;
+                            setGenerateButton(true, inProgressHtml);
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                        btn.disabled = false;
+                        setGenerateButton(true, inProgressHtml);
+                    }
+                    return;
+                }
+
+                var confirmed = confirm(
+                    'Chunk generation will use significant CPU or GPU (depending on your setup) and system resources while it runs.\n\nContinue?'
+                );
+                if (!confirmed) return;
+
+                btn.innerHTML = 'Triggering...';
+                btn.disabled = true;
+
+                try {
+                    const response = await fetch('/api/generate_chunk', { method: 'POST' });
+                    const data = await response.json();
+                    if (response.status === 409) {
+                        alert(data.error || 'Chunk generation is already running.');
+                        setGenerateButton(true, inProgressHtml);
+                        return;
+                    }
+                    if (data.success) {
+                        btn.innerHTML = 'Generation Triggered!';
+                        btn.classList.remove('bg-gray-600', 'cursor-not-allowed');
+                        btn.classList.add('bg-indigo-900', 'hover:bg-indigo-700', 'text-indigo-200');
+                        setTimeout(() => window.location.reload(), 2000);
+                    } else {
+                        alert('Error: ' + (data.error || 'Unknown error'));
+                        setGenerateButton(false, defaultHtml);
+                    }
+                } catch (error) {
+                    alert('Error triggering generation: ' + error.message);
+                    setGenerateButton(false, defaultHtml);
+                }
+            });
+        })();
+
+        document.getElementById('btn-restart-chunk-gen').addEventListener('click', async function () {
+            const btn = document.getElementById('btn-restart-chunk-gen');
+            const status = document.getElementById('settings-save-status');
+            btn.disabled = true;
+            status.textContent = 'Restarting…';
+            status.className = 'text-sm text-gray-400 self-center';
+            try {
+                const res = await fetch('/api/restart_chunk_generator', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = 'Restarted.';
+                    status.className = 'text-sm text-green-400 self-center';
+                } else {
+                    status.textContent = data.error || 'Failed';
+                    status.className = 'text-sm text-red-400 self-center';
+                }
+            } catch (e) {
+                status.textContent = 'Error: ' + e.message;
+                status.className = 'text-sm text-red-400 self-center';
+            }
+            btn.disabled = false;
+            setTimeout(function () { status.textContent = ''; }, 4000);
+        });
+
+        (function () {
+            const section = document.getElementById('config-section');
+            const editBtn = document.getElementById('btn-edit-config');
+            const saveBtn = document.getElementById('btn-save-settings');
+            const inputs = section.querySelectorAll('.config-input');
+            const readonlyClasses = ['bg-gray-900/50', 'border-gray-700', 'text-gray-500', 'cursor-not-allowed'];
+            const editableClasses = ['bg-gray-800', 'border-gray-600', 'text-gray-200'];
+
+            function setEditMode(editing) {
+                section.dataset.editMode = editing ? '1' : '0';
+                editBtn.textContent = editing ? 'Cancel' : 'Edit';
+                saveBtn.disabled = !editing;
+                saveBtn.classList.toggle('bg-indigo-600/50', !editing);
+                saveBtn.classList.toggle('text-gray-400', !editing);
+                saveBtn.classList.toggle('cursor-not-allowed', !editing);
+                saveBtn.classList.toggle('bg-indigo-600', editing);
+                saveBtn.classList.toggle('hover:bg-indigo-500', editing);
+                saveBtn.classList.toggle('text-white', editing);
+                inputs.forEach(function (el) {
+                    if (el.tagName === 'SELECT') {
+                        el.disabled = !editing;
+                    } else {
+                        el.readOnly = !editing;
+                    }
+                    el.classList.remove(...readonlyClasses, ...editableClasses);
+                    el.classList.add(...(editing ? editableClasses : readonlyClasses));
+                });
+            }
+
+            editBtn.addEventListener('click', function () {
+                setEditMode(section.dataset.editMode !== '1');
+            });
+        })();
+
+        document.getElementById('btn-save-settings').addEventListener('click', async function () {
+            const btn = document.getElementById('btn-save-settings');
+            const status = document.getElementById('settings-save-status');
+            const payload = {
+                MAX_CHUNKS: document.getElementById('setting-max-chunks').value.trim() || '56',
+                CHUNK_DURATION: document.getElementById('setting-chunk-duration').value.trim() || '300',
+                CLIP_MIN: document.getElementById('setting-clip-min').value.trim() || '6',
+                CLIP_MAX: document.getElementById('setting-clip-max').value.trim() || '6',
+                CHUNKS_PER_RUN: document.getElementById('setting-chunks-per-run').value.trim() || '4',
+                CRON_SCHEDULE: document.getElementById('setting-cron-schedule').value.trim(),
+                HW_ACCEL: document.getElementById('setting-hw-accel').value || 'none'
+            };
+            btn.disabled = true;
+            status.textContent = 'Saving…';
+            try {
+                const res = await fetch('/api/update_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = 'Saved. Click Restart chunk-generator to apply.';
+                    status.className = 'text-sm text-green-400 self-center';
+                } else {
+                    status.textContent = data.error || 'Failed';
+                    status.className = 'text-sm text-red-400 self-center';
+                }
+            } catch (e) {
+                status.textContent = 'Error: ' + e.message;
+                status.className = 'text-sm text-red-400 self-center';
+            }
+            btn.disabled = false;
+            setTimeout(function () { status.textContent = ''; }, 5000);
+        });
+
+        (function () {
+            const list = document.getElementById('cron-history-list');
+            if (!list) return;
+            fetch('/api/cron-run-history').then(function (r) { return r.json(); }).then(function (data) {
+                if (!data.entries || data.entries.length === 0) {
+                    list.innerHTML = '<li class="text-gray-500">No runs yet</li>';
+                    return;
+                }
+                list.innerHTML = data.entries.map(function (e) {
+                    const label = e.trigger === 'manual' ? 'manual' : 'cron';
+                    const cls = e.trigger === 'manual' ? 'text-amber-400' : 'text-emerald-400';
+                    return '<li class="flex justify-between gap-2"><span class="font-mono text-gray-400 truncate">' + e.timestamp + '</span><span class="' + cls + ' shrink-0">' + label + '</span></li>';
+                }).join('');
+            }).catch(function () {
+                list.innerHTML = '<li class="text-gray-500">—</li>';
+            });
+        })();
+
+        (function () {
+            const liveCpu = document.getElementById('live-cpu');
+            const liveMem = document.getElementById('live-mem');
+            const liveGpu = document.getElementById('live-gpu');
+            const liveGpuRow = document.getElementById('live-gpu-row');
+            if (!liveCpu && !liveMem) return;
+
+            function fmtMb(mb) {
+                if (mb == null) return '—';
+                return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+            }
+
+            function poll() {
+                fetch('/api/system-usage').then(function (r) { return r.json(); }).then(function (d) {
+                    if (liveCpu) liveCpu.textContent = d.cpu_percent != null ? d.cpu_percent + ' %' : '—';
+                    if (liveMem) {
+                        if (d.mem_percent != null && d.mem_used_mb != null && d.mem_total_mb != null)
+                            liveMem.innerHTML = fmtMb(d.mem_used_mb) + ' / ' + fmtMb(d.mem_total_mb) + ' <span class="text-cyan-400">(' + d.mem_percent + ' %)</span>';
+                        else liveMem.textContent = '—';
+                    }
+                    if (liveGpu && liveGpuRow) {
+                        if (d.gpu_percent != null || d.gpu_mem_used_mb != null) {
+                            liveGpuRow.style.display = '';
+                            var parts = [];
+                            if (d.gpu_percent != null) parts.push(d.gpu_percent + ' %');
+                            if (d.gpu_mem_used_mb != null && d.gpu_mem_total_mb != null)
+                                parts.push(fmtMb(d.gpu_mem_used_mb) + ' / ' + fmtMb(d.gpu_mem_total_mb));
+                            liveGpu.textContent = parts.length ? parts.join(' · ') : '—';
+                        } else liveGpuRow.style.display = 'none';
+                    }
+                }).catch(function () {
+                    if (liveCpu) liveCpu.textContent = '—';
+                    if (liveMem) liveMem.textContent = '—';
+                });
+            }
+
+            poll();
+            setInterval(poll, 5000);
+        })();
+    </script>
+</body>
+</html>

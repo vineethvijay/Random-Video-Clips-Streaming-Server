@@ -138,13 +138,23 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
     idx=$(( idx + 1 ))
   done
 
-  CHUNK_TS=$(date +%s)
-  CHUNK_NAME="$OUTPUT_DIR/chunk_${CHUNK_TS}.mp4"
+  # Friendly chunk names: <star>_<random_word>_<date>.mp4 (e.g. sirius_portcullis_2025-03-08.mp4)
+  STARS=(sirius canopus arcturus vega capella rigel procyon betelgeuse altair aldebaran spica antares pollux fomalhaut deneb regulus castor bellatrix alnilam alnitak mintaka algieba alpheratz algol mirfak dubhe merak phecda megrez alioth mizar alkaid enif scheat markab sadalmelik skat rasalhague cebalrai zubenelgenubi zubeneschamali unukalhai kornephoros sadachbia schedar algenib alcor achernar hamal diphda)
+  word1=${STARS[$((RANDOM % ${#STARS[@]}))]}
+  word2=$(curl -sf --connect-timeout 3 --max-time 5 "https://random-word-api.herokuapp.com/word" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)[0])" 2>/dev/null)
+  [ -z "$word2" ] && FALLBACK=(portcullis oversteps mango peach apricot cherry plum citrus honeydew crimson) && word2=${FALLBACK[$((RANDOM % ${#FALLBACK[@]}))]}
+  CHUNK_DATE=$(date +%Y-%m-%d)
+  CHUNK_BASE="${word1}_${word2}_${CHUNK_DATE}"
+  CHUNK_NAME="$OUTPUT_DIR/${CHUNK_BASE}.mp4"
+  # Avoid overwrite if same second (e.g. fast runs)
+  while [ -f "$CHUNK_NAME" ]; do
+    CHUNK_BASE="${word1}_${word2}_${CHUNK_DATE}_${RANDOM}"
+    CHUNK_NAME="$OUTPUT_DIR/${CHUNK_BASE}.mp4"
+  done
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
     -c copy "$CHUNK_NAME" -loglevel error
 
   # Write metadata: source videos, codec, resolution (for dashboard)
-  CHUNK_BASE="chunk_${CHUNK_TS}"
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"
   SOURCES_JSON="[]"
   [ -n "$SOURCE_BASENAMES" ] && SOURCES_JSON="[$(echo "$SOURCE_BASENAMES" | tr ',' '\n' | sort -u | sed 's/^/"/;s/$/"/' | paste -sd,)]"

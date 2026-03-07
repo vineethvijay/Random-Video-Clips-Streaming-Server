@@ -65,6 +65,7 @@ def index():
                 video_codec = None
                 width = None
                 height = None
+                created_at_str = None
                 if os.path.isfile(meta_path):
                     try:
                         with open(meta_path, 'r') as _f:
@@ -73,6 +74,7 @@ def index():
                             video_codec = meta.get('video_codec')
                             width = meta.get('width')
                             height = meta.get('height')
+                            created_at_str = meta.get('created_at')
                     except (ValueError, OSError):
                         pass
                 # Fallback: run ffprobe for chunks missing codec/resolution in meta (e.g. older chunks)
@@ -98,10 +100,22 @@ def index():
                                     height = int(parts[1])
                     except (subprocess.TimeoutExpired, OSError, ValueError):
                         pass
+                # Use created_at from meta.json (real creation time); fallback to st_ctime for older chunks
+                if created_at_str:
+                    try:
+                        dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                        created_at_display = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        timestamp = dt.timestamp()
+                    except (ValueError, TypeError):
+                        created_at_display = datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
+                        timestamp = stat.st_ctime
+                else:
+                    created_at_display = datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
+                    timestamp = stat.st_ctime
                 chunks.append({
                     'name': f,
-                    'created_at': datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
-                    'timestamp': stat.st_ctime,
+                    'created_at': created_at_display,
+                    'timestamp': timestamp,
                     'size_mb': round(stat.st_size / (1024 * 1024), 2),
                     'source_videos': source_videos,
                     'video_codec': video_codec,
@@ -205,13 +219,14 @@ def index():
         except OSError:
             pass
 
-    nvidia_available = False
-    try:
-        import subprocess
-        r = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], capture_output=True, text=True, timeout=5)
-        nvidia_available = r.returncode == 0 and bool(r.stdout.strip())
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
-        pass
+    nvidia_available = settings.get('HW_ACCEL') == 'nvidia'  # trust .env if already set
+    if not nvidia_available:
+        try:
+            import subprocess
+            r = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], capture_output=True, text=True, timeout=5)
+            nvidia_available = r.returncode == 0 and bool(r.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+            pass
 
     sys_info = {
         'os': os_info,
@@ -244,6 +259,96 @@ def index():
     current_chunk_data = next((c for c in chunks if c['name'] == current_chunk), None) if current_chunk else None
     chunks_excluding_current = [c for c in chunks if c['name'] != current_chunk]
     return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats)
+
+
+def _admin_context():
+    """Build settings, sys_info, stream_stats for admin page."""
+    current_status = clip_pusher.get_status()
+    settings = {}
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, val = line.split('=', 1)
+                    settings[key] = val
+
+    import platform
+    import multiprocessing
+    os_info = platform.system() + " " + platform.release()
+    if os.path.exists('/etc/os-release'):
+        with open('/etc/os-release', 'r') as f:
+            for line in f:
+                if line.startswith('PRETTY_NAME='):
+                    os_info = line.split('=', 1)[1].strip().strip('"')
+                    break
+    is_docker = os.path.exists('/.dockerenv')
+    try:
+        cpu_count = multiprocessing.cpu_count()
+    except NotImplementedError:
+        cpu_count = 1
+    mem_total_mb = mem_available_mb = None
+    if os.path.exists('/proc/meminfo'):
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    if line.startswith('MemTotal:'):
+                        mem_total_mb = int(line.split()[1]) / 1024
+                    elif line.startswith('MemAvailable:'):
+                        mem_available_mb = int(line.split()[1]) / 1024
+                    if mem_total_mb is not None and mem_available_mb is not None:
+                        break
+        except (ValueError, OSError):
+            pass
+    chunks_total_mb = 0
+    chunks_count = 0
+    if os.path.exists(CHUNK_FOLDER):
+        for f in os.listdir(CHUNK_FOLDER):
+            if f.endswith('.mp4') and not f.startswith('chunk_temp'):
+                chunks_count += 1
+                try:
+                    chunks_total_mb += os.path.getsize(os.path.join(CHUNK_FOLDER, f)) / (1024 * 1024)
+                except OSError:
+                    pass
+    chunks_total_mb = round(chunks_total_mb, 2)
+    chunk_mount_total_mb = chunk_mount_available_mb = None
+    if os.path.exists(CHUNK_FOLDER):
+        try:
+            st = os.statvfs(CHUNK_FOLDER)
+            chunk_mount_total_mb = round((st.f_frsize * st.f_blocks) / (1024 * 1024), 1)
+            chunk_mount_available_mb = round((st.f_frsize * st.f_bavail) / (1024 * 1024), 1)
+        except OSError:
+            pass
+    nvidia_available = settings.get('HW_ACCEL') == 'nvidia'
+    if not nvidia_available:
+        try:
+            import subprocess
+            r = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], capture_output=True, text=True, timeout=5)
+            nvidia_available = r.returncode == 0 and bool(r.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+    sys_info = {
+        'os': os_info, 'docker': 'Yes' if is_docker else 'No', 'cpu_cores': cpu_count,
+        'hw_accel': settings.get('HW_ACCEL', 'none'), 'nvidia_available': nvidia_available,
+        'mem_total_mb': mem_total_mb, 'mem_available_mb': mem_available_mb,
+        'chunks_total_mb': chunks_total_mb, 'chunks_count': chunks_count,
+        'chunk_mount_total_mb': chunk_mount_total_mb, 'chunk_mount_available_mb': chunk_mount_available_mb,
+    }
+    stream_stats = {
+        'hours_played': current_status.get('hours_played'),
+        'chunks_pushed': current_status.get('chunks_pushed'),
+        'chunks_created_total': current_status.get('chunks_created_total'),
+        'total_seconds_streamed': current_status.get('total_seconds_streamed'),
+    }
+    return {'settings': settings, 'sys_info': sys_info, 'stream_stats': stream_stats}
+
+
+@app.route('/admin')
+def admin():
+    """Admin page: Server Configuration, Stream Stats, Cron history, System Information"""
+    ctx = _admin_context()
+    return render_template('admin.html', **ctx)
 
 
 @app.route('/iptv.m3u')
@@ -292,6 +397,30 @@ def status():
 def stream_status():
     """Get RTMP stream pusher status"""
     return jsonify(clip_pusher.get_status())
+
+
+@app.route('/api/cron-run-history')
+def cron_run_history():
+    """Get chunk-generator cron/manual run history from stats/.cron_run_history"""
+    stats_dir = STATS_DIR or CHUNK_FOLDER
+    history_path = os.path.join(stats_dir, '.cron_run_history')
+    entries = []
+    if os.path.isfile(history_path):
+        try:
+            with open(history_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) >= 2:
+                        entries.append({'timestamp': parts[0], 'trigger': parts[1]})
+                    elif len(parts) == 1:
+                        entries.append({'timestamp': parts[0], 'trigger': 'cron'})
+            entries.reverse()
+        except (OSError, ValueError):
+            pass
+    return jsonify({'entries': entries[:100]})
 
 
 def _read_proc_stat_cpu():

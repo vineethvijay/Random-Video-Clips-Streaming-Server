@@ -8,10 +8,17 @@ if [ -n "${CRON_SCHEDULE}" ]; then
   cron
 fi
 
+RUN_HISTORY="${STATS_DIR:-/chunks}/.cron_run_history"
+
 echo "[chunk-gen] Ready. Waiting for cron triggers or manual UI triggers..."
 while true; do
   if [ -f /chunks/.trigger_generation ]; then
-    echo '[chunk-gen] Generation triggered!'
+    trigger_type="cron"
+    if grep -q "manual" /chunks/.trigger_generation 2>/dev/null; then
+      trigger_type="manual"
+    fi
+    echo "[chunk-gen] Generation triggered! (${trigger_type})"
+    echo "$(date -Iseconds) ${trigger_type}" >> "$RUN_HISTORY" 2>/dev/null || true
     rm -f /chunks/.trigger_generation
     /generate_chunk.sh manual
   fi
