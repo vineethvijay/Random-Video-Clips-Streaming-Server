@@ -174,6 +174,38 @@ class ClipPusher:
             return True
         return False
 
+    def skip_to_next_audio(self) -> bool:
+        """Stop current stream and switch to the next audio track. Returns True if a stream was running."""
+        if self._streamer_process and self._streamer_process.poll() is None:
+            # Pre-select next audio before terminating so status/refresh shows it immediately
+            if self._audio_files:
+                candidates = [f for f in self._audio_files if os.path.basename(f) != self._current_audio]
+                pool = candidates if candidates else self._audio_files
+                next_audio = random.choice(pool)
+                self._persistent_audio_path = next_audio
+                self._current_audio = os.path.basename(next_audio)
+                self._audio_position = 0.0
+                try:
+                    out = subprocess.check_output(
+                        ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                         '-of', 'default=noprint_wrappers=1:nokey=1', next_audio]
+                    )
+                    self._persistent_audio_duration = float(out.decode('utf-8').strip())
+                except Exception:
+                    self._persistent_audio_duration = 3600.0
+            else:
+                self._persistent_audio_path = None
+                self._current_audio = None
+            try:
+                self._streamer_process.terminate()
+                self._streamer_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._streamer_process.kill()
+            except Exception:
+                pass
+            return True
+        return False
+
     # ── Internal ──────────────────────────────────────────────────
 
     def _get_audio_file(self) -> Optional[str]:

@@ -192,6 +192,7 @@ The **Chunk Generator** supports both CPU encoding (`libx264`) and NVIDIA hardwa
 | GET | `/iptv.m3u` | IPTV playlist (M3U) for external players |
 | POST | `/api/generate_chunk` | Triggers the generator to build new chunks |
 | POST | `/api/skip_to_next` | Skip current chunk and advance to next (audio position preserved) |
+| POST | `/api/skip_to_next_audio` | Skip to the next audio track |
 
 ## Troubleshooting
 
