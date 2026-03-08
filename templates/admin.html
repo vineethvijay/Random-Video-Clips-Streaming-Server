@@ -34,6 +34,7 @@
                         <a href="/api/system-usage" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/system-usage</a>
                         <a href="/api/skip_to_next" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/skip_to_next</a>
                         <a href="/api/generate_chunk" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/generate_chunk</a>
+                        <a href="/api/cron" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">GET/POST/DELETE /api/cron</a>
                         <a href="/api/update_settings" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/update_settings</a>
                         <a href="/api/restart_chunk_generator" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/restart_chunk_generator</a>
                         <a href="/api/stop_generation" target="_blank" class="block px-4 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-white">POST /api/stop_generation</a>
@@ -42,6 +43,32 @@
                 </div>
             </div>
         </header>
+
+        <!-- Host cron: programmatic control or manual instructions -->
+        <div class="mb-6 p-4 rounded-lg border {% if cron_available %}bg-indigo-900/20 border-indigo-700/50{% else %}bg-amber-900/30 border-amber-700/50{% endif %}">
+            <h3 class="text-sm font-semibold text-gray-200 mb-3">Chunk generation schedule (host cron)</h3>
+            {% if cron_available %}
+            <div id="cron-control" class="space-y-3">
+                <div class="flex flex-wrap items-center gap-2">
+                    <input type="text" id="cron-schedule-input" placeholder="0 2 * * *" value="{{ cron_schedule or '' }}"
+                        class="px-3 py-2 rounded bg-gray-800 border border-gray-600 text-gray-200 font-mono text-sm w-32 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                    <button type="button" id="cron-btn-set" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">Set schedule</button>
+                    <button type="button" id="cron-btn-remove" class="px-4 py-2 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 text-sm font-medium">Remove</button>
+                </div>
+                <p id="cron-status" class="text-xs {% if cron_schedule %}text-green-400{% else %}text-gray-500{% endif %}">{% if cron_schedule %}✓ Schedule set{% else %}No schedule set{% endif %}</p>
+                {% if cron_command %}
+                <details class="text-xs">
+                    <summary class="cursor-pointer text-gray-500 hover:text-gray-400">View cron</summary>
+                    <pre class="mt-1 p-2 bg-gray-900/60 rounded overflow-x-auto text-gray-400 font-mono text-xs whitespace-pre-wrap break-words">{% if cron_schedule %}{{ cron_schedule }} {% endif %}{{ cron_command }}</pre>
+                </details>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="text-sm text-amber-200 mb-2">Mount host crontab and set <code class="bg-gray-800 px-1.5 py-0.5 rounded">HOST_CRONTAB_PATH</code> + <code class="bg-gray-800 px-1.5 py-0.5 rounded">PROJECT_ROOT</code> for UI control. Or add manually:</p>
+            <pre class="text-xs font-mono text-gray-300 bg-gray-900/60 p-3 rounded overflow-x-auto mb-2">{{ host_cron_schedule }} cd /path/to/project && curl -s -X POST "http://localhost:{{ host_cron_port }}/api/generate_chunk?source=cron" >> {{ host_cron_log }} 2>&1</pre>
+            <p class="text-xs text-gray-400">Edit crontab: <code class="bg-gray-800 px-1.5 py-0.5 rounded">crontab -e</code></p>
+            {% endif %}
+        </div>
 
         <div class="space-y-6">
             <!-- Server Configuration -->
@@ -80,12 +107,6 @@
                                 class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed">
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-400 mb-1">Chunk generation Cron Schedule</label>
-                            <input type="text" id="setting-cron-schedule" readonly value="{{ settings.get('CRON_SCHEDULE', '0 2 * * *') }}"
-                                placeholder="0 2 * * *" class="config-input w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-2 text-gray-500 cursor-not-allowed font-mono text-sm">
-                            <p class="text-xs text-gray-500 mt-1">Empty = disabled. Examples: <code>0 2 * * *</code> 2am daily, <code>0 */6 * * *</code> every 6h</p>
-                        </div>
-                        <div>
                             <label class="block text-sm font-medium text-gray-400 mb-1">Hardware Acceleration</label>
                             {% if not sys_info.nvidia_available %}
                             <p class="text-xs text-amber-500/90 mb-2">NVIDIA GPU not detected on this system. Only CPU encoding is available.</p>
@@ -112,6 +133,23 @@
                 </div>
             </div>
 
+            <!-- Cron run history -->
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Cron run history</h3>
+                <p class="text-xs text-gray-500 mb-2">Chunk generation triggers (cron schedule or manual). Stored in stats/.cron_run_history</p>
+                <ul id="cron-history-list" class="space-y-1 text-sm text-gray-300 max-h-48 overflow-y-auto">
+                    <li class="text-gray-500">Loading…</li>
+                </ul>
+                <div id="cron-history-pagination" class="mt-3 pt-3 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap hidden">
+                    <span class="text-sm text-gray-500">Page <span id="cron-page-current">1</span> of <span id="cron-page-total">1</span> <span id="cron-total-entries" class="text-gray-600">(0 entries)</span></span>
+                    <div class="flex gap-1">
+                        <button type="button" id="cron-btn-prev" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
+                        <span id="cron-page-buttons" class="flex gap-1 flex-wrap justify-center"></span>
+                        <button type="button" id="cron-btn-next" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Stream Stats -->
             <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
                 <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Stream Stats</h3>
@@ -129,23 +167,6 @@
                         <span class="font-mono">{{ stream_stats.chunks_created_total if stream_stats.chunks_created_total is not none else '—' }}</span>
                     </li>
                 </ul>
-            </div>
-
-            <!-- Cron run history -->
-            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Cron run history</h3>
-                <p class="text-xs text-gray-500 mb-2">Chunk generation triggers (cron schedule or manual). Stored in stats/.cron_run_history</p>
-                <ul id="cron-history-list" class="space-y-1 text-sm text-gray-300 max-h-48 overflow-y-auto">
-                    <li class="text-gray-500">Loading…</li>
-                </ul>
-                <div id="cron-history-pagination" class="mt-3 pt-3 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap hidden">
-                    <span class="text-sm text-gray-500">Page <span id="cron-page-current">1</span> of <span id="cron-page-total">1</span> <span id="cron-total-entries" class="text-gray-600">(0 entries)</span></span>
-                    <div class="flex gap-1">
-                        <button type="button" id="cron-btn-prev" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
-                        <span id="cron-page-buttons" class="flex gap-1 flex-wrap justify-center"></span>
-                        <button type="button" id="cron-btn-next" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
-                    </div>
-                </div>
             </div>
 
             <!-- System Information -->
@@ -366,6 +387,63 @@
             });
         })();
 
+        (function () {
+            const control = document.getElementById('cron-control');
+            if (!control) return;
+            const scheduleInput = document.getElementById('cron-schedule-input');
+            const statusEl = document.getElementById('cron-status');
+            const setBtn = document.getElementById('cron-btn-set');
+            const removeBtn = document.getElementById('cron-btn-remove');
+
+            function showStatus(msg, ok) {
+                statusEl.textContent = msg;
+                statusEl.className = 'text-xs ' + (ok ? 'text-green-400' : 'text-amber-400');
+            }
+
+            setBtn.addEventListener('click', async function () {
+                const schedule = (scheduleInput && scheduleInput.value || '').trim();
+                if (!schedule) {
+                    showStatus('Enter a schedule (e.g. 0 2 * * *)', false);
+                    return;
+                }
+                setBtn.disabled = true;
+                try {
+                    const res = await fetch('/api/cron', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ schedule: schedule })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        showStatus(data.message || 'Schedule set.', true);
+                        setTimeout(function () { location.reload(); }, 500);
+                    } else {
+                        showStatus(data.error || 'Failed', false);
+                    }
+                } catch (e) {
+                    showStatus('Error: ' + e.message, false);
+                }
+                setBtn.disabled = false;
+            });
+
+            removeBtn.addEventListener('click', async function () {
+                removeBtn.disabled = true;
+                try {
+                    const res = await fetch('/api/cron', { method: 'DELETE' });
+                    const data = await res.json();
+                    if (data.success) {
+                        showStatus(data.message || 'Cron job removed.', true);
+                        setTimeout(function () { location.reload(); }, 500);
+                    } else {
+                        showStatus(data.error || 'Failed', false);
+                    }
+                } catch (e) {
+                    showStatus('Error: ' + e.message, false);
+                }
+                removeBtn.disabled = false;
+            });
+        })();
+
         document.getElementById('btn-save-settings').addEventListener('click', async function () {
             const btn = document.getElementById('btn-save-settings');
             const status = document.getElementById('settings-save-status');
@@ -375,7 +453,6 @@
                 CLIP_MIN: document.getElementById('setting-clip-min').value.trim() || '6',
                 CLIP_MAX: document.getElementById('setting-clip-max').value.trim() || '6',
                 CHUNKS_PER_RUN: document.getElementById('setting-chunks-per-run').value.trim() || '4',
-                CRON_SCHEDULE: document.getElementById('setting-cron-schedule').value.trim(),
                 HW_ACCEL: document.getElementById('setting-hw-accel').value || 'none'
             };
             btn.disabled = true;

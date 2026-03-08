@@ -63,14 +63,14 @@
         <div class="space-y-6">
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden">
                     <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex flex-col gap-3">
-                        <div class="flex justify-between items-center flex-wrap gap-2">
-                            <h2 class="text-xl font-semibold text-white">Generated Video Chunks</h2>
-                            <div class="flex items-center gap-2">
-                                <button type="button" id="btn-skip-next" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm font-medium whitespace-nowrap">Play next</button>
-                                <span id="chunks-count-badge" class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{ chunks|length }} Chunks</span>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-xl font-semibold text-white shrink-0">Generated Video Chunks</h2>
+                            <div class="flex-1 flex justify-center">
+                                <button type="button" id="btn-skip-next" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 rounded text-sm font-medium whitespace-nowrap">Play Next</button>
                             </div>
+                            <span id="chunks-count-badge" class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide shrink-0">{{ chunks|length }} Chunks</span>
                         </div>
-                        <div class="flex flex-wrap items-center gap-2">
+                        <div class="flex flex-wrap items-center gap-2 justify-center">
                             <input type="text" id="chunks-search" placeholder="Filter by filename…" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
                             <select id="chunks-sort" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
                                 <option value="date-desc">Date (newest first)</option>
@@ -180,9 +180,27 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
 
                 <!-- Audio files (below chunks) -->
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6">
-                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
-                        <h2 class="text-xl font-semibold text-white">Audio Files</h2>
-                        <span class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">{{ audio_files|length }} files</span>
+                    <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex flex-col gap-3">
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-xl font-semibold text-white shrink-0">Audio Files</h2>
+                            <div class="flex-1 flex justify-center">
+                                {% if audio_files %}
+                                <button type="button" id="btn-skip-next-audio" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 rounded text-sm font-medium whitespace-nowrap">Next Audio</button>
+                                {% endif %}
+                            </div>
+                            <span id="audio-count-badge" class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide shrink-0">{{ audio_files|length }} files</span>
+                        </div>
+                        {% if audio_files %}
+                        <div class="flex flex-wrap items-center gap-2 justify-center">
+                            <input type="text" id="audio-search" placeholder="Filter by filename…" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
+                            <select id="audio-sort" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
+                                <option value="name-asc">Name (A–Z)</option>
+                                <option value="name-desc">Name (Z–A)</option>
+                                <option value="size-desc">Size (largest first)</option>
+                                <option value="size-asc">Size (smallest first)</option>
+                            </select>
+                        </div>
+                        {% endif %}
                     </div>
                     <div class="p-0 overflow-x-auto">
                         <table class="w-full text-left border-collapse">
@@ -193,30 +211,42 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-700" id="audio-tbody">
-                                {% for af in audio_files %}
-                                <tr data-audio-name="{{ af.name }}" class="audio-row transition duration-150 {% if af.name == current_audio %}now-playing-audio{% else %}hover:bg-gray-700/50{% endif %}">
-                                    <td class="py-3 px-6 text-sm {% if af.name != current_audio %}text-gray-300{% endif %}">
-                                        <span class="audio-name">{{ af.name }}</span>
-                                        {% if af.name == current_audio %}
+                                {% if current_audio %}
+                                {% set af_now = audio_files|selectattr('name', 'equalto', current_audio)|first %}
+                                <tr id="audio-now-playing-row" data-audio-name="{{ current_audio }}" class="audio-row now-playing-audio border-b-2 border-blue-500/50">
+                                    <td class="py-3 px-6 text-sm">
+                                        <span class="audio-name">{{ current_audio }}</span>
                                         <span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span>
-                                        {% endif %}
-                                        <div class="audio-progress mt-1.5 hidden">
-                                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs">
-                                                <div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div>
-                                            </div>
-                                            <span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span>
-                                        </div>
+                                        <div class="audio-progress mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div>
                                     </td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 text-right">{% if af_now %}{{ af_now.size_mb }} MB{% else %}—{% endif %}</td>
+                                </tr>
+                                {% endif %}
+                                {% for af in audio_files if af.name != current_audio %}
+                                <tr data-audio-page="{{ ((loop.index0) // 4) + 1 }}" data-audio-name="{{ af.name }}" class="audio-row transition duration-150 hover:bg-gray-700/50">
+                                    <td class="py-3 px-6 text-sm text-gray-300"><span class="audio-name">{{ af.name }}</span></td>
                                     <td class="py-3 px-6 text-sm text-gray-400 text-right">{{ af.size_mb }} MB</td>
                                 </tr>
                                 {% else %}
+                                {% if not current_audio %}
                                 <tr>
                                     <td colspan="2" class="py-6 text-center text-gray-500">No audio files found. Set AUDIO_FOLDER in .env to add background music.</td>
                                 </tr>
+                                {% endif %}
                                 {% endfor %}
                             </tbody>
                         </table>
                     </div>
+                    {% if audio_files %}
+                    <div id="audio-pagination" class="px-6 py-3 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap">
+                        <span class="text-sm text-gray-400">Page <span id="audio-page-current">1</span> of <span id="audio-page-total">{% if audio_files %}{{ [1, ((audio_files|rejectattr('name', 'equalto', current_audio)|list|length + 3) // 4)]|max }}{% else %}1{% endif %}</span></span>
+                        <div class="flex gap-1">
+                            <button type="button" id="audio-btn-prev" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
+                            <span id="audio-page-buttons" class="flex gap-1 flex-wrap justify-center"></span>
+                            <button type="button" id="audio-btn-next" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
         </div>
     </div>
@@ -226,6 +256,8 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             const CHUNKS_PER_PAGE = 5;
             const tbody = document.getElementById('chunks-tbody');
             const chunksMetadata = {{ chunks | tojson }};
+            const audioMetadata = {{ audio_files | tojson }};
+            const currentAudioName = {{ (current_audio or '') | tojson }};
             const totalPagesEl = document.getElementById('page-total');
             let total = totalPagesEl ? parseInt(totalPagesEl.textContent, 10) : 1;
             let currentPage = 1;
@@ -407,45 +439,49 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
 
             function updateNowPlayingAudio(audioName, startedAt, duration, audioPositionSec, audioTrackDurationSec) {
                     var audioTbody = document.getElementById('audio-tbody');
-                    var audioRows = audioTbody ? Array.from(audioTbody.querySelectorAll('tr.audio-row')) : [];
-                    audioRows.forEach(function (tr) {
-                        tr.classList.remove('now-playing-audio');
-                        tr.removeAttribute('data-chunk-started-at');
-                        tr.removeAttribute('data-chunk-duration');
-                        tr.removeAttribute('data-audio-position');
-                        tr.removeAttribute('data-audio-duration');
-                        tr.removeAttribute('data-audio-position-as-of');
-                        var td = tr.querySelector('td:first-child');
-                        if (td) {
-                            var badge = td.querySelector('.now-playing-audio-badge');
-                            if (badge) badge.remove();
-                            var prog = td.querySelector('.audio-progress');
-                            if (prog) prog.classList.add('hidden');
-                        }
-                    });
-                    if (!audioName) return;
-                    var playingAudioRow = audioRows.find(function (tr) { return tr.getAttribute('data-audio-name') === audioName; });
-                    if (playingAudioRow) {
-                        playingAudioRow.classList.add('now-playing-audio');
+                    var pinnedRow = document.getElementById('audio-now-playing-row');
+                    if (!audioName) {
+                        if (pinnedRow) pinnedRow.classList.add('hidden');
+                        return;
+                    }
+                    var af = (audioMetadata || []).find(function(a) { return a.name === audioName; });
+                    var sizeMb = af && af.size_mb != null ? af.size_mb + ' MB' : '—';
+                    if (pinnedRow) {
+                        pinnedRow.classList.remove('hidden');
+                        pinnedRow.setAttribute('data-audio-name', audioName);
+                        var nameSpan = pinnedRow.querySelector('.audio-name');
+                        if (nameSpan) nameSpan.textContent = audioName;
+                        var sizeTd = pinnedRow.querySelector('td:last-child');
+                        if (sizeTd) sizeTd.textContent = sizeMb;
                         if (startedAt != null && duration != null && duration > 0) {
-                            playingAudioRow.setAttribute('data-chunk-started-at', startedAt);
-                            playingAudioRow.setAttribute('data-chunk-duration', duration);
+                            pinnedRow.setAttribute('data-chunk-started-at', startedAt);
+                            pinnedRow.setAttribute('data-chunk-duration', duration);
                         }
                         if (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0) {
-                            playingAudioRow.setAttribute('data-audio-position', String(audioPositionSec));
-                            playingAudioRow.setAttribute('data-audio-duration', String(audioTrackDurationSec));
-                            playingAudioRow.setAttribute('data-audio-position-as-of', String(Date.now() / 1000));
+                            pinnedRow.setAttribute('data-audio-position', String(audioPositionSec));
+                            pinnedRow.setAttribute('data-audio-duration', String(audioTrackDurationSec));
+                            pinnedRow.setAttribute('data-audio-position-as-of', String(Date.now() / 1000));
                         }
-                        var td = playingAudioRow.querySelector('td:first-child');
-                        if (td) {
-                            var span = document.createElement('span');
-                            span.className = 'ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider';
-                            span.textContent = 'Now Playing';
-                            td.appendChild(span);
-                            var prog = td.querySelector('.audio-progress');
-                            var showProg = (startedAt != null && duration != null && duration > 0) || (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0);
-                            if (prog && showProg) prog.classList.remove('hidden');
+                        var prog = pinnedRow.querySelector('.audio-progress');
+                        var showProg = (startedAt != null && duration != null && duration > 0) || (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0);
+                        if (prog) { if (showProg) prog.classList.remove('hidden'); else prog.classList.add('hidden'); }
+                    } else if (audioTbody) {
+                        var tr = document.createElement('tr');
+                        tr.id = 'audio-now-playing-row';
+                        tr.setAttribute('data-audio-name', audioName);
+                        tr.className = 'audio-row now-playing-audio border-b-2 border-blue-500/50';
+                        var showProg = (startedAt != null && duration != null && duration > 0) || (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0);
+                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><span class="audio-name">' + audioName + '</span><span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span><div class="audio-progress mt-1.5 ' + (showProg ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + sizeMb + '</td>';
+                        if (startedAt != null && duration != null && duration > 0) {
+                            tr.setAttribute('data-chunk-started-at', startedAt);
+                            tr.setAttribute('data-chunk-duration', duration);
                         }
+                        if (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0) {
+                            tr.setAttribute('data-audio-position', String(audioPositionSec));
+                            tr.setAttribute('data-audio-duration', String(audioTrackDurationSec));
+                            tr.setAttribute('data-audio-position-as-of', String(Date.now() / 1000));
+                        }
+                        audioTbody.insertBefore(tr, audioTbody.firstChild);
                     }
                 }
 
@@ -519,6 +555,107 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             }
             if (sortEl) sortEl.addEventListener('change', function() { applyFilterAndSort(); });
 
+            (function audioSection() {
+                var AUDIO_PER_PAGE = 4;
+                var audioTbody = document.getElementById('audio-tbody');
+                var audioTotalEl = document.getElementById('audio-page-total');
+                var audioCountBadge = document.getElementById('audio-count-badge');
+                var audioRows = [];
+                var audioTotal = 1;
+                var audioCurrentPage = 1;
+
+                function audioRowHtml(af, page) {
+                    return '<tr data-audio-page="' + page + '" data-audio-name="' + af.name + '" class="audio-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><span class="audio-name">' + af.name + '</span></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td></tr>';
+                }
+
+                function getFilteredSortedAudio() {
+                    var searchVal = (document.getElementById('audio-search') || {}).value || '';
+                    var sortVal = (document.getElementById('audio-sort') || {}).value || 'name-asc';
+                    var playingName = (document.getElementById('audio-now-playing-row') || {}).getAttribute('data-audio-name') || currentAudioName;
+                    var list = (audioMetadata || []).slice();
+                    if (searchVal.trim()) {
+                        var q = searchVal.toLowerCase().trim();
+                        list = list.filter(function(a) { return (a.name || '').toLowerCase().indexOf(q) >= 0; });
+                    }
+                    if (playingName) list = list.filter(function(a) { return a.name !== playingName; });
+                    if (sortVal === 'name-asc') list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                    else if (sortVal === 'name-desc') list.sort(function(a, b) { return (b.name || '').localeCompare(a.name || ''); });
+                    else if (sortVal === 'size-desc') list.sort(function(a, b) { return (b.size_mb || 0) - (a.size_mb || 0); });
+                    else if (sortVal === 'size-asc') list.sort(function(a, b) { return (a.size_mb || 0) - (b.size_mb || 0); });
+                    return list;
+                }
+
+                function applyAudioFilterAndSort() {
+                    var playingName = (document.getElementById('audio-now-playing-row') || {}).getAttribute('data-audio-name') || currentAudioName;
+                    var filtered = getFilteredSortedAudio();
+                    audioTotal = Math.max(1, Math.ceil(filtered.length / AUDIO_PER_PAGE));
+                    audioCurrentPage = Math.min(audioCurrentPage, audioTotal);
+
+                    var html = '';
+                    if (playingName && (audioMetadata || []).some(function(a) { return a.name === playingName; })) {
+                        var af = (audioMetadata || []).find(function(a) { return a.name === playingName; });
+                        html += '<tr id="audio-now-playing-row" data-audio-name="' + playingName + '" class="audio-row now-playing-audio border-b-2 border-blue-500/50"><td class="py-3 px-6 text-sm"><span class="audio-name">' + playingName + '</span><span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span><div class="audio-progress mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af && af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td></tr>';
+                    }
+                    if (filtered.length === 0 && !html) {
+                        var searchVal = (document.getElementById('audio-search') || {}).value || '';
+                        var msg = searchVal.trim() ? 'No matching audio files.' : 'No audio files found. Set AUDIO_FOLDER in .env to add background music.';
+                        html += '<tr><td colspan="2" class="py-6 text-center text-gray-500">' + msg + '</td></tr>';
+                    } else if (filtered.length > 0) {
+                        html += filtered.map(function(af, i) {
+                            var page = Math.floor(i / AUDIO_PER_PAGE) + 1;
+                            return audioRowHtml(af, page);
+                        }).join('');
+                    }
+                    if (audioTbody) audioTbody.innerHTML = html;
+
+                    audioRows = audioTbody ? Array.from(audioTbody.querySelectorAll('tr.audio-row[data-audio-page]')) : [];
+                    if (audioCountBadge) {
+                        var totalCount = (audioMetadata || []).length;
+                        var searchVal = (document.getElementById('audio-search') || {}).value || '';
+                        audioCountBadge.textContent = searchVal.trim() ? filtered.length + ' of ' + totalCount + ' files' : totalCount + ' files';
+                    }
+                    if (audioTotalEl) audioTotalEl.textContent = audioTotal;
+                    var paginationDiv = document.getElementById('audio-pagination');
+                    if (paginationDiv) paginationDiv.style.display = filtered.length > 0 ? '' : 'none';
+                    showAudioPage(audioCurrentPage);
+                }
+
+                function showAudioPage(page) {
+                    audioCurrentPage = Math.max(1, Math.min(page, audioTotal));
+                    audioRows.forEach(function(tr) {
+                        var p = parseInt(tr.getAttribute('data-audio-page'), 10);
+                        tr.style.display = p === audioCurrentPage ? '' : 'none';
+                    });
+                    var curEl = document.getElementById('audio-page-current');
+                    if (curEl) curEl.textContent = audioCurrentPage;
+                    var prevBtn = document.getElementById('audio-btn-prev');
+                    var nextBtn = document.getElementById('audio-btn-next');
+                    if (prevBtn) prevBtn.disabled = audioCurrentPage <= 1;
+                    if (nextBtn) nextBtn.disabled = audioCurrentPage >= audioTotal;
+                    var container = document.getElementById('audio-page-buttons');
+                    if (container) {
+                        container.innerHTML = '';
+                        for (var i = 1; i <= audioTotal; i++) {
+                            var btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.className = 'w-8 h-8 rounded text-sm ' + (i === audioCurrentPage ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600');
+                            btn.textContent = i;
+                            btn.addEventListener('click', function() { showAudioPage(parseInt(this.textContent, 10)); });
+                            container.appendChild(btn);
+                        }
+                    }
+                }
+
+                audioRows = audioTbody ? Array.from(audioTbody.querySelectorAll('tr.audio-row[data-audio-page]')) : [];
+                audioTotal = audioTotalEl ? parseInt(audioTotalEl.textContent, 10) : 1;
+                if (audioRows.length > 0) showAudioPage(1);
+                document.getElementById('audio-btn-prev') && document.getElementById('audio-btn-prev').addEventListener('click', function() { showAudioPage(audioCurrentPage - 1); });
+                document.getElementById('audio-btn-next') && document.getElementById('audio-btn-next').addEventListener('click', function() { showAudioPage(audioCurrentPage + 1); });
+                document.getElementById('audio-search') && document.getElementById('audio-search').addEventListener('input', function() { applyAudioFilterAndSort(); });
+                document.getElementById('audio-search') && document.getElementById('audio-search').addEventListener('keyup', function(e) { if (e.key === 'Escape') { this.value = ''; applyAudioFilterAndSort(); } });
+                document.getElementById('audio-sort') && document.getElementById('audio-sort').addEventListener('change', function() { applyAudioFilterAndSort(); });
+            })();
+
                 var initial = {{ (initial_stream_status or {}) | tojson }};
                 if (initial.current_chunk) updateNowPlaying(initial.current_chunk, initial.current_chunk_started_at, initial.current_chunk_duration);
                 if (initial.current_audio) updateNowPlayingAudio(initial.current_audio, initial.current_chunk_started_at, initial.current_chunk_duration, initial.audio_position_sec, initial.audio_track_duration_sec);
@@ -526,6 +663,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             setInterval(pollCurrentChunk, 4000);
             setInterval(tickProgressBar, 1000);
             setTimeout(tickProgressBar, 200);
+            window.addEventListener('refresh-stream-status', function() { pollCurrentChunk(); });
         })();
 
         function showToast(message, durationMs) {
@@ -554,6 +692,35 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                         showToast('Switched to next video. It may take a few seconds to appear in the live stream.');
                         btn.textContent = 'Next';
                         setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+                    } else {
+                        btn.textContent = orig;
+                        btn.disabled = false;
+                    }
+                } else {
+                    btn.textContent = orig;
+                    btn.disabled = false;
+                }
+            } catch (e) {
+                btn.textContent = orig;
+                btn.disabled = false;
+            }
+        });
+
+        document.getElementById('btn-skip-next-audio') && document.getElementById('btn-skip-next-audio').addEventListener('click', async () => {
+            const btn = document.getElementById('btn-skip-next-audio');
+            const orig = btn.textContent;
+            btn.textContent = '…';
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/skip_to_next_audio', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    if (data.skipped) {
+                        showToast('Switching to next audio track.');
+                        btn.textContent = 'Next';
+                        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+                        setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 1500);
+                        setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 4000);
                     } else {
                         btn.textContent = orig;
                         btn.disabled = false;

@@ -30,6 +30,12 @@ RTMP_URL = os.getenv('RTMP_URL', 'rtmp://nginx-rtmp:1935/live/stream')
 AUDIO_FOLDER = os.getenv('AUDIO_FOLDER', '')
 # Persistent stats dir (mount this volume so hours played / chunks created survive new deployments)
 STATS_DIR = os.getenv('STATS_DIR', '').strip() or None
+# Host crontab path (inside container) for programmatic cron. Mount host /var/spool/cron/crontabs to /host-crontab.
+HOST_CRONTAB_PATH = os.getenv('HOST_CRONTAB_PATH', '').strip() or None
+# Project root on host (for cron command). e.g. /root/new-random-vid-player
+PROJECT_ROOT = os.getenv('PROJECT_ROOT', '').strip() or None
+
+CRON_JOB_COMMENT = 'random-video-streamer chunk-gen'
 
 # Initialize components
 print(f"Initializing Random Video Clips Streaming Server...")
@@ -319,7 +325,16 @@ def _admin_context():
         'chunks_created_total': current_status.get('chunks_created_total'),
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
-    return {'settings': settings, 'sys_info': sys_info, 'stream_stats': stream_stats}
+    host_cron_schedule = (settings.get('CRON_SCHEDULE') or '0 2 * * *').strip()
+    host_cron_port = EXTERNAL_PORT
+    host_cron_log = 'stats/cron.log'
+    cron_available = _cron_available()
+    cron_schedule, cron_command = _cron_get_job() if cron_available else (None, None)
+    return {
+        'settings': settings, 'sys_info': sys_info, 'stream_stats': stream_stats,
+        'host_cron_schedule': host_cron_schedule, 'host_cron_port': host_cron_port, 'host_cron_log': host_cron_log,
+        'cron_available': cron_available, 'cron_schedule': cron_schedule, 'cron_command': cron_command,
+    }
 
 
 @app.route('/admin')
@@ -435,6 +450,107 @@ def cron_run_history():
     })
 
 
+def _cron_available():
+    """True if host crontab is mounted and we can manage it."""
+    return bool(HOST_CRONTAB_PATH and os.path.exists(os.path.dirname(HOST_CRONTAB_PATH)))
+
+
+def _get_cron_tab():
+    """Open host crontab for root. Returns CronTab or None."""
+    if not _cron_available():
+        return None
+    try:
+        from crontab import CronTab
+        return CronTab(tabfile=HOST_CRONTAB_PATH)
+    except Exception:
+        return None
+
+
+def _cron_get_job():
+    """Get our cron job if present. Returns (schedule_str, command) or (None, None)."""
+    tab = _get_cron_tab()
+    if not tab:
+        return None, None
+    for job in tab:
+        if job.comment and CRON_JOB_COMMENT in job.comment:
+            parts = str(job).split(None, 5)
+            schedule = ' '.join(parts[:5]) if len(parts) >= 5 else None
+            return schedule, job.command
+    return None, None
+
+
+def _cron_set(schedule: str) -> tuple[bool, str]:
+    """Set or update our cron job. Returns (success, message)."""
+    if not _cron_available():
+        return False, 'Host crontab not mounted. Set HOST_CRONTAB_PATH and mount /var/spool/cron/crontabs.'
+    if not PROJECT_ROOT:
+        return False, 'PROJECT_ROOT not set. Required for cron command.'
+    schedule = (schedule or '').strip()
+    if not schedule:
+        return False, 'Schedule cannot be empty.'
+    try:
+        from crontab import CronTab
+        tab = CronTab(tabfile=HOST_CRONTAB_PATH)
+        # Remove existing job
+        for job in list(tab):
+            if job.comment and CRON_JOB_COMMENT in job.comment:
+                tab.remove(job)
+        # Add new job
+        log_path = os.path.join(PROJECT_ROOT, 'stats', 'cron.log')
+        cmd = f'cd {PROJECT_ROOT} && curl -s -X POST "http://localhost:{EXTERNAL_PORT}/api/generate_chunk?source=cron" >> {log_path} 2>&1'
+        job = tab.new(command=cmd, comment=CRON_JOB_COMMENT)
+        job.setall(schedule)
+        tab.write()
+        return True, 'Cron job updated.'
+    except Exception as e:
+        return False, str(e)
+
+
+def _cron_remove() -> tuple[bool, str]:
+    """Remove our cron job. Returns (success, message)."""
+    if not _cron_available():
+        return False, 'Host crontab not mounted.'
+    try:
+        from crontab import CronTab
+        tab = CronTab(tabfile=HOST_CRONTAB_PATH)
+        removed = 0
+        for job in list(tab):
+            if job.comment and CRON_JOB_COMMENT in job.comment:
+                tab.remove(job)
+                removed += 1
+        if removed:
+            tab.write()
+        return True, 'Cron job removed.' if removed else 'No cron job found.'
+    except Exception as e:
+        return False, str(e)
+
+
+@app.route('/api/cron', methods=['GET', 'POST', 'DELETE'])
+def api_cron():
+    """GET: current cron job. POST: set schedule. DELETE: remove job."""
+    if request.method == 'GET':
+        available = _cron_available()
+        schedule, command = _cron_get_job() if available else (None, None)
+        return jsonify({
+            'available': available,
+            'schedule': schedule,
+            'command': command,
+            'project_root': PROJECT_ROOT,
+        })
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        schedule = data.get('schedule', '').strip()
+        ok, msg = _cron_set(schedule)
+        if ok:
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    if request.method == 'DELETE':
+        ok, msg = _cron_remove()
+        if ok:
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+
+
 def _read_proc_stat_cpu():
     """Read first line of /proc/stat (aggregate CPU). Returns (user, nice, system, idle, iowait, irq, softirq) or None."""
     try:
@@ -522,6 +638,13 @@ def skip_to_next():
     skipped = clip_pusher.skip_to_next()
     return jsonify({'success': True, 'skipped': skipped})
 
+
+@app.route('/api/skip_to_next_audio', methods=['POST'])
+def skip_to_next_audio():
+    """Skip to the next audio track."""
+    skipped = clip_pusher.skip_to_next_audio()
+    return jsonify({'success': True, 'skipped': skipped})
+
 @app.route('/chunks/<path:filename>')
 def serve_chunk(filename):
     """Serve a chunk file for playback in the browser (read-only, safe path)."""
@@ -546,16 +669,17 @@ def trigger_generation():
     # Prefer /app/trigger (named volume) when mounted – avoids host permission issues on Proxmox
     trigger_dir = TRIGGER_DIR or ('/app/trigger' if os.path.isdir('/app/trigger') else None) or STATS_DIR or CHUNK_FOLDER
     trigger_file = os.path.join(trigger_dir, '.trigger_generation')
+    trigger_type = 'cron' if request.args.get('source') == 'cron' else 'manual'
     try:
         os.makedirs(trigger_dir, exist_ok=True)
         with open(trigger_file, 'w') as f:
-            f.write('manual\n')
+            f.write(trigger_type + '\n')
         return jsonify({'success': True, 'message': 'Triggered chunk generation. The chunk-generator container will start processing momentarily.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-EDITABLE_SETTINGS = {'MAX_CHUNKS', 'CHUNK_DURATION', 'CLIP_MIN', 'CLIP_MAX', 'CHUNKS_PER_RUN', 'CRON_SCHEDULE', 'HW_ACCEL'}
+EDITABLE_SETTINGS = {'MAX_CHUNKS', 'CHUNK_DURATION', 'CLIP_MIN', 'CLIP_MAX', 'CHUNKS_PER_RUN', 'HW_ACCEL'}
 
 @app.route('/api/update_settings', methods=['POST'])
 def update_settings():

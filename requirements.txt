@@ -4,3 +4,4 @@ python-dotenv==1.0.0
 docker>=7.1.0
 gunicorn==22.0.0
 gevent==24.2.1
+python-crontab==3.0.0

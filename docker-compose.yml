@@ -51,7 +51,6 @@ services:
       - OUTPUT_DIR=/chunks
       - STATS_DIR=/app/stats
       - TRIGGER_DIR=/app/trigger
-      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
     shm_size: '512m'
     tmpfs:
       - /tmp:size=4g
@@ -78,6 +77,7 @@ services:
       - ${CHUNK_FOLDER:-./chunks}:/chunks
       - ${STATS_DIR:-./stats}:/app/stats
       - trigger_volume:/app/trigger
+      - /var/spool/cron/crontabs:/host-crontab:rw
       - ./.env:/app/.env
       - ./app.py:/app/app.py:ro
       - ./templates:/app/templates:ro
@@ -91,6 +91,8 @@ services:
       - HLS_PORT=${HLS_PORT:-8080}
       - STATS_DIR=/app/stats
       - TRIGGER_DIR=/app/trigger
+      - HOST_CRONTAB_PATH=/host-crontab/root
+      - PROJECT_ROOT=${PROJECT_ROOT:-}
     depends_on:
       nginx-rtmp:
         condition: service_healthy
