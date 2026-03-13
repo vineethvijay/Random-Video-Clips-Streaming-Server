@@ -111,7 +111,7 @@ def main() -> None:
         if len(sys.argv) != 6:
             print(f"Usage: {FILENAME} record <json_path> <video_path> <start_sec> <end_sec>", file=sys.stderr)
             sys.exit(2)
-        _, json_path, video_path, start_s, end_s = sys.argv
+        _, _, json_path, video_path, start_s, end_s = sys.argv
         record_used(json_path, video_path, float(start_s), float(end_s))
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)

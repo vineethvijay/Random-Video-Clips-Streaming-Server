@@ -24,11 +24,23 @@
         @keyframes stream-title-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
         .toast-popup { animation: toast-fade-in 0.2s ease-out; }
         @keyframes toast-fade-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        #sources-modal { transition: opacity 0.2s ease-out; }
+        #sources-modal:not(.open) { opacity: 0; pointer-events: none; }
     </style>
 </head>
 
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <div id="toast-container" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col items-center gap-2"></div>
+    <!-- Sources modal -->
+    <div id="sources-modal" class="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/70">
+        <div class="bg-gray-800 rounded-lg shadow-xl border border-gray-600 max-w-2xl w-full max-h-[80vh] flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
+                <h3 id="sources-modal-title" class="text-lg font-semibold text-white">Source files</h3>
+                <button type="button" id="sources-modal-close" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div id="sources-modal-body" class="p-6 overflow-y-auto font-mono text-sm text-gray-300 space-y-2"></div>
+        </div>
+    </div>
     <div class="max-w-6xl mx-auto px-4 py-8">
         <!-- Header -->
         <header class="mb-8 flex justify-between items-end border-b border-gray-700 pb-4">
@@ -39,7 +51,7 @@
                     <a href="/admin" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Admin</a>
                 </nav>
             </div>
-            <a href="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8" target="_blank"
+                <a href="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8" target="_blank"
                 class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition">▶️ Stream URL</a>
         </header>
 
@@ -57,7 +69,7 @@
                 <div class="aspect-video bg-black border-t border-gray-700">
                     <video id="stream-player" class="w-full h-full" controls playsinline muted></video>
                 </div>
-            </div>
+        </div>
         </section>
 
         <div class="space-y-6">
@@ -87,8 +99,9 @@
                             <thead>
                                 <tr class="bg-gray-700/50">
                                     <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Filename</th>
-                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Sources</th>
-                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Metadata</th>
+                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Model</th>
+                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Expires</th>
+                                    <th class="py-3 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">Info</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-700" id="chunks-tbody">
@@ -99,6 +112,9 @@
                                         <div class="flex items-center gap-2 flex-wrap">
                                             <a href="/chunks/{{ current_chunk }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a>
                                             <span class="chunk-name">{{ current_chunk }}</span>
+                                            {% if m.source_videos %}
+                                            <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-sources='{{ m.source_videos | tojson }}'>Sources</button>
+                                            {% endif %}
                                             <span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>
                                         </div>
                                         <div class="now-playing-progress mt-1.5 {% if not (initial_stream_status.current_chunk_started_at and initial_stream_status.current_chunk_duration) %}hidden{% endif %}">
@@ -108,23 +124,26 @@
                                             <span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span>
                                         </div>
                                     </td>
-                                    <td class="py-3 px-6 text-sm text-gray-400 max-w-[200px] align-top">
-                                        <div class="relative group">
-                                            <span class="truncate block cursor-help text-gray-500">{% if m.source_videos %}View sources{% else %}—{% endif %}</span>
-                                            {% if m.source_videos %}
-                                            <div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">{% for s in m.source_videos %}{{ s }}
-{% endfor %}</div>
-                                            {% endif %}
+                                    <td class="py-3 px-6 text-sm text-gray-400 align-top max-w-[200px]">
+                                        {% if m.model_info %}
+                                        <div class="flex flex-col gap-0.5">
+                                            {% for model in m.model_info[:3] %}
+                                            <a href="{{ model if model.startswith('http') else 'https://' ~ model }}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 truncate text-xs" title="{{ model }}">{{ model }}</a>
+                                            {% endfor %}
+                                            {% if m.model_info|length > 3 %}<span class="text-gray-500 text-xs">+{{ m.model_info|length - 3 }} more</span>{% endif %}
                                         </div>
+                                        {% else %}
+                                        <span class="text-gray-500">—</span>
+                                        {% endif %}
                                     </td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 align-top">~{{ m.days_to_expire or '?' }} days</td>
                                     <td class="py-3 px-6 text-sm text-gray-400 align-top">
                                         <div class="relative group">
-                                            <span class="truncate block cursor-help text-gray-500">View metadata</span>
+                                            <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span>
                                             <div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">{% if m.video_codec and m.width and m.height %}Video: {{ m.video_codec }} {{ m.width }}x{{ m.height }}
 {% elif m.video_codec %}Video: {{ m.video_codec }}
 {% endif %}Size: {{ m.size_mb }} MB
-Created: {{ m.created_at }}
-Expires: ~{{ m.days_to_expire }} days</div>
+Created: {{ m.created_at }}</div>
                                         </div>
                                     </td>
                                 </tr>
@@ -136,31 +155,37 @@ Expires: ~{{ m.days_to_expire }} days</div>
                                         <div class="flex items-center gap-2 flex-wrap">
                                             <a href="/chunks/{{ chunk.name }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a>
                                             <span class="chunk-name">{{ chunk.name }}</span>
-                                        </div>
-                                    </td>
-                                    <td class="py-3 px-6 text-sm text-gray-400 max-w-[200px] align-top">
-                                        <div class="relative group">
-                                            <span class="truncate block cursor-help text-gray-500">{% if chunk.source_videos %}View sources{% else %}—{% endif %}</span>
                                             {% if chunk.source_videos %}
-                                            <div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">{% for s in chunk.source_videos %}{{ s }}
-{% endfor %}</div>
+                                            <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ chunk.name }}" data-sources='{{ chunk.source_videos | tojson }}'>Sources</button>
                                             {% endif %}
                                         </div>
                                     </td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 align-top max-w-[200px]">
+                                        {% if chunk.model_info %}
+                                        <div class="flex flex-col gap-0.5">
+                                            {% for model in chunk.model_info[:3] %}
+                                            <a href="{{ model if model.startswith('http') else 'https://' ~ model }}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 truncate text-xs" title="{{ model }}">{{ model }}</a>
+                                            {% endfor %}
+                                            {% if chunk.model_info|length > 3 %}<span class="text-gray-500 text-xs">+{{ chunk.model_info|length - 3 }} more</span>{% endif %}
+                                        </div>
+                                        {% else %}
+                                        <span class="text-gray-500">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 align-top">~{{ chunk.days_to_expire or '?' }} days</td>
                                     <td class="py-3 px-6 text-sm text-gray-400 align-top">
                                         <div class="relative group">
-                                            <span class="truncate block cursor-help text-gray-500">View metadata</span>
+                                            <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span>
                                             <div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">{% if chunk.video_codec and chunk.width and chunk.height %}Video: {{ chunk.video_codec }} {{ chunk.width }}x{{ chunk.height }}
 {% elif chunk.video_codec %}Video: {{ chunk.video_codec }}
 {% endif %}Size: {{ chunk.size_mb }} MB
-Created: {{ chunk.created_at }}
-Expires: ~{{ chunk.days_to_expire }} days</div>
+Created: {{ chunk.created_at }}</div>
                                         </div>
                                     </td>
                                 </tr>
                                 {% else %}
                                 <tr>
-                                    <td colspan="3" class="py-8 text-center text-gray-500">{% if current_chunk_data %}No other chunks.{% else %}No chunks found in the chunks folder.{% endif %}</td>
+                                    <td colspan="4" class="py-8 text-center text-gray-500">{% if current_chunk_data %}No other chunks.{% else %}No chunks found in the chunks folder.{% endif %}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -173,10 +198,10 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                             <button type="button" id="btn-prev" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
                             <span id="page-buttons" class="flex gap-1 flex-wrap justify-center"></span>
                             <button type="button" id="btn-next" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
-                        </div>
+            </div>
                     </div>
                     {% endif %}
-                </div>
+                            </div>
 
                 <!-- Audio files (below chunks) -->
                 <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6">
@@ -189,7 +214,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                                 {% endif %}
                             </div>
                             <span id="audio-count-badge" class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide shrink-0">{{ audio_files|length }} files</span>
-                        </div>
+                                </div>
                         {% if audio_files %}
                         <div class="flex flex-wrap items-center gap-2 justify-center">
                             <input type="text" id="audio-search" placeholder="Filter by filename…" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
@@ -199,9 +224,9 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                                 <option value="size-desc">Size (largest first)</option>
                                 <option value="size-asc">Size (smallest first)</option>
                             </select>
-                        </div>
+                                </div>
                         {% endif %}
-                    </div>
+                            </div>
                     <div class="p-0 overflow-x-auto">
                         <table class="w-full text-left border-collapse">
                             <thead>
@@ -236,7 +261,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                                 {% endfor %}
                             </tbody>
                         </table>
-                    </div>
+                            </div>
                     {% if audio_files %}
                     <div id="audio-pagination" class="px-6 py-3 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap">
                         <span class="text-sm text-gray-400">Page <span id="audio-page-current">1</span> of <span id="audio-page-total">{% if audio_files %}{{ [1, ((audio_files|rejectattr('name', 'equalto', current_audio)|list|length + 3) // 4)]|max }}{% else %}1{% endif %}</span></span>
@@ -247,7 +272,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                         </div>
                     </div>
                     {% endif %}
-                </div>
+            </div>
         </div>
     </div>
 
@@ -266,7 +291,6 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             let filteredSortedChunks = [];
 
             function rowHtmlFromChunk(chunk, page) {
-                var srcContent = (chunk.source_videos && chunk.source_videos.length) ? chunk.source_videos.join('\n') : '';
                 var metaLines = [];
                 if (chunk.video_codec) {
                     var vid = 'Video: ' + chunk.video_codec;
@@ -275,11 +299,12 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                 }
                 metaLines.push('Size: ' + (chunk.size_mb != null ? chunk.size_mb + ' MB' : '—'));
                 metaLines.push('Created: ' + (chunk.created_at || '—'));
-                metaLines.push('Expires: ~' + (chunk.days_to_expire != null ? chunk.days_to_expire : '?') + ' days');
                 var metaContent = metaLines.join('\n');
-                var srcCell = srcContent ? '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View sources</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + srcContent + '</div></div>' : '<span class="text-gray-500">—</span>';
-                var metaCell = '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View metadata</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div>';
-                return '<tr data-page="' + page + '" data-chunk-name="' + chunk.name + '" class="chunk-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunk.name + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunk.name + '</span></div></td><td class="py-3 px-6 text-sm text-gray-400 max-w-[200px] align-top">' + srcCell + '</td><td class="py-3 px-6 text-sm text-gray-400 align-top">' + metaCell + '</td></tr>';
+                var metaCell = '<div class="relative group"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div>';
+                var expiresCell = '~' + (chunk.days_to_expire != null ? chunk.days_to_expire : '?') + ' days';
+                var sourcesBtn = (chunk.source_videos && chunk.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunk.name + '" data-sources="' + (JSON.stringify(chunk.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
+                var modelCell = (chunk.model_info && chunk.model_info.length) ? chunk.model_info.slice(0, 3).map(function(m) { var href = (m.indexOf('http') === 0 ? m : 'https://' + m); return '<a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 truncate text-xs block" title="' + m.replace(/"/g, '&quot;') + '">' + m.replace(/</g, '&lt;') + '</a>'; }).join('') + (chunk.model_info.length > 3 ? '<span class="text-gray-500 text-xs">+' + (chunk.model_info.length - 3) + ' more</span>' : '') : '<span class="text-gray-500">—</span>';
+                return '<tr data-page="' + page + '" data-chunk-name="' + chunk.name + '" class="chunk-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunk.name + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunk.name + '</span>' + sourcesBtn + '</div></td><td class="py-3 px-6 text-sm text-gray-400 align-top max-w-[200px]"><div class="flex flex-col gap-0.5">' + modelCell + '</div></td><td class="py-3 px-6 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 px-6 text-sm text-gray-400 align-top">' + metaCell + '</td></tr>';
             }
 
             function getFilteredSortedChunks() {
@@ -309,7 +334,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                 var chunkRows = tbody ? tbody.querySelectorAll('tr.chunk-row[data-page]') : [];
                 chunkRows.forEach(function(tr) { tr.remove(); });
 
-                var emptyRow = tbody ? tbody.querySelector('tr td[colspan="3"]') : null;
+                var emptyRow = tbody ? tbody.querySelector('tr td[colspan="4"]') : null;
                 if (emptyRow && emptyRow.closest('tr')) emptyRow.closest('tr').remove();
 
                 var insertAfter = nowPlayingRow || (tbody ? tbody.firstChild : null);
@@ -317,7 +342,7 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                     var searchVal = (document.getElementById('chunks-search') || {}).value || '';
                     var msg = searchVal.trim() ? 'No matching chunks.' : ((chunksMetadata || []).length === 0 ? 'No chunks found in the chunks folder.' : 'No other chunks.');
                     var tr = document.createElement('tr');
-                    tr.innerHTML = '<td colspan="3" class="py-8 text-center text-gray-500">' + msg + '</td>';
+                    tr.innerHTML = '<td colspan="4" class="py-8 text-center text-gray-500">' + msg + '</td>';
                     if (insertAfter) insertAfter.after(tr);
                     else if (tbody) tbody.appendChild(tr);
                 } else {
@@ -375,9 +400,20 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                 return m + ':' + (s < 10 ? '0' : '') + s;
             }
 
-            function buildSourcesContent(meta) {
-                if (!meta || !meta.source_videos || !meta.source_videos.length) return '';
-                return meta.source_videos.join('\n');
+            function showSourcesModal(chunkName, sources) {
+                var modal = document.getElementById('sources-modal');
+                var title = document.getElementById('sources-modal-title');
+                var body = document.getElementById('sources-modal-body');
+                if (!modal || !title || !body) return;
+                title.textContent = 'Source files: ' + (chunkName || '');
+                body.innerHTML = (sources || []).map(function(p) {
+                    return '<div class="break-all select-text py-1 border-b border-gray-700 last:border-0">' + (p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+                }).join('') || '<p class="text-gray-500">No source files.</p>';
+                modal.classList.add('open');
+            }
+            function hideSourcesModal() {
+                var modal = document.getElementById('sources-modal');
+                if (modal) modal.classList.remove('open');
             }
             function buildMetadataContent(meta) {
                 var lines = [];
@@ -388,7 +424,6 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                 }
                 lines.push('Size: ' + (meta && meta.size_mb != null ? meta.size_mb + ' MB' : '—'));
                 lines.push('Created: ' + (meta && meta.created_at ? meta.created_at : '—'));
-                lines.push('Expires: ~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days');
                 return lines.join('\n');
             }
 
@@ -404,10 +439,12 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                         tr.id = 'chunk-now-playing-row';
                         tr.setAttribute('data-chunk-name', chunkName);
                         tr.className = 'chunk-row now-playing border-b-2 border-blue-500/50';
-                        var srcContent = buildSourcesContent(meta);
                         var metaContent = buildMetadataContent(meta);
-                        var srcCell = srcContent ? '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View sources</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + srcContent + '</div></div>' : '<span class="text-gray-500">—</span>';
-                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 max-w-[200px] align-top">' + srcCell + '</td><td class="py-3 px-6 text-sm text-gray-400 align-top"><div class="relative group"><span class="truncate block cursor-help text-gray-500">View metadata</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div></td>';
+                        var metaCell = '<div class="relative group"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div>';
+                        var expiresCell = '~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days';
+                        var sourcesBtn = (meta && meta.source_videos && meta.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-sources="' + (JSON.stringify(meta.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
+                        var modelCell = (meta && meta.model_info && meta.model_info.length) ? meta.model_info.slice(0, 3).map(function(m) { var href = (m.indexOf('http') === 0 ? m : 'https://' + m); return '<a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 truncate text-xs block" title="' + m.replace(/"/g, '&quot;') + '">' + m.replace(/</g, '&lt;') + '</a>'; }).join('') + (meta.model_info.length > 3 ? '<span class="text-gray-500 text-xs">+' + (meta.model_info.length - 3) + ' more</span>' : '') : '<span class="text-gray-500">—</span>';
+                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + '<span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 align-top max-w-[200px]"><div class="flex flex-col gap-0.5">' + modelCell + '</div></td><td class="py-3 px-6 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 px-6 text-sm text-gray-400 align-top">' + metaCell + '</td>';
                         if (tbody && tbody.firstChild) tbody.insertBefore(tr, tbody.firstChild); else if (tbody) tbody.appendChild(tr);
                         playingRow = tr;
                     } else {
@@ -418,12 +455,23 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
                         if (nameSpan) nameSpan.textContent = chunkName;
                         var playLink = playingRow.querySelector('a[href^="/chunks/"]');
                         if (playLink) playLink.href = '/chunks/' + chunkName;
-                        var srcContent = buildSourcesContent(meta);
-                        var srcCell = srcContent ? '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View sources</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + srcContent + '</div></div>' : '<span class="text-gray-500">—</span>';
-                        var srcTd = playingRow.querySelector('td:nth-child(2)');
-                        if (srcTd) srcTd.innerHTML = srcCell;
-                        var metaTd = playingRow.querySelector('td:nth-child(3)');
-                        if (metaTd) metaTd.innerHTML = '<div class="relative group"><span class="truncate block cursor-help text-gray-500">View metadata</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + buildMetadataContent(meta) + '</div></div>';
+                        var metaCell = '<div class="relative group"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span><div class="hidden group-hover:block absolute left-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + buildMetadataContent(meta) + '</div></div>';
+                        var expiresCell = '~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days';
+                        var sourcesBtn = (meta && meta.source_videos && meta.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-sources="' + (JSON.stringify(meta.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
+                        var nameCell = playingRow.querySelector('td:first-child');
+                        if (nameCell) {
+                            var nameDiv = nameCell.querySelector('.flex');
+                            if (nameDiv) nameDiv.innerHTML = '<a href="/chunks/' + chunkName + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + '<span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>';
+                            var progDiv = nameCell.querySelector('.now-playing-progress');
+                            if (progDiv) progDiv.className = 'now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden');
+                        }
+                        var modelCell = (meta && meta.model_info && meta.model_info.length) ? meta.model_info.slice(0, 3).map(function(m) { var href = (m.indexOf('http') === 0 ? m : 'https://' + m); return '<a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 truncate text-xs block" title="' + m.replace(/"/g, '&quot;') + '">' + m.replace(/</g, '&lt;') + '</a>'; }).join('') + (meta.model_info.length > 3 ? '<span class="text-gray-500 text-xs">+' + (meta.model_info.length - 3) + ' more</span>' : '') : '<span class="text-gray-500">—</span>';
+                        var modelTd = playingRow.querySelector('td:nth-child(2)');
+                        if (modelTd) modelTd.innerHTML = '<div class="flex flex-col gap-0.5">' + modelCell + '</div>';
+                        var expiresTd = playingRow.querySelector('td:nth-child(3)');
+                        if (expiresTd) expiresTd.textContent = expiresCell;
+                        var metaTd = playingRow.querySelector('td:nth-child(4)');
+                        if (metaTd) metaTd.innerHTML = metaCell;
                     }
                     if (startedAt != null && duration != null && duration > 0) {
                         playingRow.setAttribute('data-chunk-started-at', startedAt);
@@ -664,6 +712,22 @@ Expires: ~{{ chunk.days_to_expire }} days</div>
             setInterval(tickProgressBar, 1000);
             setTimeout(tickProgressBar, 200);
             window.addEventListener('refresh-stream-status', function() { pollCurrentChunk(); });
+
+            document.body.addEventListener('click', function(e) {
+                var btn = e.target && e.target.closest('.chunk-sources-btn');
+                if (btn) {
+                    e.preventDefault();
+                    var chunk = btn.getAttribute('data-chunk') || '';
+                    var raw = btn.getAttribute('data-sources') || '[]';
+                    var sources = [];
+                    try { sources = JSON.parse(raw.replace(/&quot;/g, '"')); } catch (_) {}
+                    showSourcesModal(chunk, sources);
+                }
+            });
+            document.getElementById('sources-modal-close') && document.getElementById('sources-modal-close').addEventListener('click', hideSourcesModal);
+            document.getElementById('sources-modal') && document.getElementById('sources-modal').addEventListener('click', function(e) {
+                if (e.target === this) hideSourcesModal();
+            });
         })();
 
         function showToast(message, durationMs) {
