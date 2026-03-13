@@ -12,6 +12,9 @@ ENV/
 dist/
 build/
 
+.cursor/
+.cursorrules
+
 # Configuration
 .env
 .github-accounts

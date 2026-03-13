@@ -67,6 +67,7 @@ def _build_chunks_list(settings=None):
                 stat = os.stat(filepath)
                 meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
                 source_videos = []
+                model_info = []
                 video_codec = None
                 width = None
                 height = None
@@ -76,6 +77,7 @@ def _build_chunks_list(settings=None):
                         with open(meta_path, 'r') as _f:
                             meta = _json.load(_f)
                             source_videos = meta.get('source_videos') or []
+                            model_info = meta.get('model_info') or []
                             video_codec = meta.get('video_codec')
                             width = meta.get('width')
                             height = meta.get('height')
@@ -99,6 +101,7 @@ def _build_chunks_list(settings=None):
                     'timestamp': timestamp,
                     'size_mb': round(stat.st_size / (1024 * 1024), 2),
                     'source_videos': source_videos,
+                    'model_info': model_info,
                     'video_codec': video_codec,
                     'width': width,
                     'height': height,

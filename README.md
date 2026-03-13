@@ -87,6 +87,10 @@ flowchart TD
     bash ~~~ API
 ```
 
+### Chunk Generation Randomization
+
+See [Chunk Generation Flow](docs/chunk-generation.md) for the full diagram and behavior summary.
+
 The system operates across three decoupled, robust containers:
 - **`chunk-generator`** — runs in the background polling for manual UI triggers or automated schedules to build 5-minute `.mp4` chunks from your video library. Uses a per-video LRU queue and a segment tracker (`.used_segments.json`) so clip start times prefer unused ranges within each file.
 - **`random-video-streamer`** — the brain and web interface. Mixes the chunks with continuous looping background audio, preventing gaps in playback and pushing a 24/7 RTMP feed to NGINX.
@@ -162,6 +166,8 @@ These variables control how new video chunks are created from your library.
 | `CRON_SCHEDULE` | `0 2 * * *` | Cron schedule for automatic generation (2am daily). Set empty to disable. |
 | `VIDEO_DIR` | `/videos` | Where the generator searches for `.mp4`, `.mkv`, `.avi` |
 | `OUTPUT_DIR` | `/chunks` | Where the generator writes the final chunks |
+| `TUBEARCHIVIST_URL` | *(none)* | TubeArchivist instance URL for metadata extraction (e.g. `https://ta.example.com`). Requires `TUBEARCHIVIST_TOKEN`. |
+| `TUBEARCHIVIST_TOKEN` | *(none)* | TubeArchivist API token (from Settings → Application). |
 
 ## Hardware Requirements
 
@@ -213,6 +219,7 @@ See `deploy/README.md`. Run `./deploy/deploy-to-proxmox.sh` to sync to the serve
 ## Scripts
 
 - `scripts/segment_tracker.py` — used by the chunk generator to pick unused time ranges and record used segments (JSON file).
+- `scripts/tubearchivist_metadata.py` — fetches TubeArchivist video metadata and extracts model info from descriptions (when `TUBEARCHIVIST_URL` + token set).
 - `deploy/deploy-to-proxmox.sh` — rsync deploy to Proxmox/Linux (excludes .env, chunks, videos, etc.)
 - `scripts/setup.sh` — initial setup and environment check
 - `scripts/start.sh` — start the streaming server
@@ -220,6 +227,21 @@ See `deploy/README.md`. Run `./deploy/deploy-to-proxmox.sh` to sync to the serve
 ## Segment tracking
 
 The chunk generator keeps a JSON file (`.used_segments.json`, under `STATS_DIR` or the chunk folder) that records which time ranges have been used in each source video. The Python helper `scripts/segment_tracker.py` (used by `generate_chunk.sh`) picks a start time in an **unused** range; if none fit or the tracker is unavailable, it falls back to a random start. This reduces repetition of the same segment within a video.
+
+## TubeArchivist metadata
+
+When your source videos come from [TubeArchivist](https://github.com/tubearchivist/tubearchivist), you can enable metadata extraction so the dashboard shows **model info** (e.g. `Model - https://www.instagram.com/...`) from video descriptions.
+
+**Setup:**
+1. Add to `.env`:
+   ```
+   TUBEARCHIVIST_URL=https://your-ta-instance.com
+   TUBEARCHIVIST_TOKEN=your_api_token
+   ```
+2. Get the token from TubeArchivist → Settings → Application → API Token.
+3. Ensure the chunk-generator container can reach the TubeArchivist URL (same host, Docker network, or public URL).
+
+The generator extracts video IDs from paths (`channel_id/video_id.mp4`), fetches metadata via the REST API, and parses lines matching `Model - <url>` in the description. Model links appear in the dashboard’s **Model** column.
 
 ## License
 

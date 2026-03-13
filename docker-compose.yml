@@ -48,6 +48,9 @@ services:
       - MAX_CHUNKS=${MAX_CHUNKS:-56}
       - HW_ACCEL=${HW_ACCEL:-none}
       - VIDEO_DIR=/videos
+      - VIDEO_HOST_PATH=${VIDEO_FOLDER:-./videos}
+      - TUBEARCHIVIST_URL=${TUBEARCHIVIST_URL:-}
+      - TUBEARCHIVIST_TOKEN=${TUBEARCHIVIST_TOKEN:-}
       - OUTPUT_DIR=/chunks
       - STATS_DIR=/app/stats
       - TRIGGER_DIR=/app/trigger

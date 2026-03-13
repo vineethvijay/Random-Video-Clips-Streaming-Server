@@ -49,10 +49,13 @@ else
     fi
   done < "$QUEUE_FILE"
   
-  # Append completely new videos to the bottom of the queue
+  # Insert new videos at random positions (fair chance to appear soon)
   while IFS= read -r v; do
     if ! grep -Fxq "$v" "$TEMP_QUEUE"; then
-      echo "$v" >> "$TEMP_QUEUE"
+      count=$(wc -l < "$TEMP_QUEUE")
+      pos=$(( count > 0 ? RANDOM % (count + 1) : 0 ))
+      { head -n "$pos" "$TEMP_QUEUE"; echo "$v"; tail -n +$(( pos + 1 )) "$TEMP_QUEUE" 2>/dev/null; } > "${TEMP_QUEUE}.2"
+      mv "${TEMP_QUEUE}.2" "$TEMP_QUEUE"
     fi
   done < "$CURRENT_VIDEOS"
   
@@ -131,8 +134,13 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
       -loglevel error "$tmp" && \
       echo "file '$tmp'" >> "$CONCAT_LIST" && \
       { [ -f "$SEGMENT_TRACKER" ] && python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start" "$(( start + clip_len ))" 2>/dev/null || true; }
-      basename=$(basename "$file")
-      SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+,}$basename"
+      fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file")
+      # Use host path in meta if VIDEO_HOST_PATH set (for dashboard display when SSH'd into server)
+      if [ -n "${VIDEO_HOST_PATH}" ]; then
+        fullpath="${fullpath//${VIDEO_DIR}\//${VIDEO_HOST_PATH%/}/}"
+      fi
+      SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+
+}${fullpath}"
 
     total=$(( total + clip_len ))
     idx=$(( idx + 1 ))
@@ -154,17 +162,33 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
     -c copy "$CHUNK_NAME" -loglevel error
 
-  # Write metadata: source videos, codec, resolution (for dashboard)
+  # Write metadata: source videos (full paths), codec, resolution (for dashboard)
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"
   SOURCES_JSON="[]"
-  [ -n "$SOURCE_BASENAMES" ] && SOURCES_JSON="[$(echo "$SOURCE_BASENAMES" | tr ',' '\n' | sort -u | sed 's/^/"/;s/$/"/' | paste -sd,)]"
+  [ -n "$SOURCE_BASENAMES" ] && SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))" 2>/dev/null) || SOURCES_JSON="[]"
+
+  # TubeArchivist metadata (model info from description) — when TUBEARCHIVIST_URL + TOKEN set
+  MODEL_JSON="[]"
+  if [ -n "${TUBEARCHIVIST_URL}" ] && [ -n "${TUBEARCHIVIST_TOKEN}" ]; then
+    TUBE_SCRIPT="${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}"
+    MODELS_TMP=$(mktemp)
+    for path in $(echo "$SOURCE_BASENAMES" | sort -u); do
+      [ -z "$path" ] && continue
+      out=$(python3 "$TUBE_SCRIPT" "$TUBEARCHIVIST_URL" "$TUBEARCHIVIST_TOKEN" "$path" 2>/dev/null || true)
+      model=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('model_info'); print(m if m else '')" 2>/dev/null || true)
+      [ -n "$model" ] && echo "$model" >> "$MODELS_TMP"
+    done
+    [ -f "$MODELS_TMP" ] && MODEL_JSON=$(sort -u "$MODELS_TMP" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))" 2>/dev/null) || true
+    rm -f "$MODELS_TMP"
+  fi
+
   VIDEO_EXTRA=""
   if codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null) && \
      width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null) && \
      height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null); then
     VIDEO_EXTRA=", \"video_codec\": \"$codec\", \"width\": $width, \"height\": $height"
   fi
-  echo "{\"source_videos\": $SOURCES_JSON, \"created_at\": \"$(date -Iseconds)\"$VIDEO_EXTRA}" > "$META_FILE"
+  echo "{\"source_videos\": $SOURCES_JSON, \"model_info\": $MODEL_JSON, \"created_at\": \"$(date -Iseconds)\"$VIDEO_EXTRA}" > "$META_FILE"
 
   # Persist "chunks ever created" count
   count=0
