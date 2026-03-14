@@ -40,7 +40,7 @@
          @keydown.escape.window="isOpen = false"
          class="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/70">
         <div @click.away="isOpen = false"
-             class="bg-gray-800 rounded-lg shadow-xl border border-gray-600 max-w-2xl w-full max-h-[80vh] flex flex-col">
+             class="bg-gray-800 rounded-lg shadow-xl border border-gray-600 max-w-4xl w-full max-h-[90vh] flex flex-col">
             <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
                 <h3 x-text="title" class="text-lg font-semibold text-white"></h3>
                 <button type="button" @click="isOpen = false" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
@@ -345,19 +345,26 @@ Created: {{ chunk.created_at }}</div>
                         this.body = list.map(function(item) {
                             var path = typeof item === 'string' ? item : (item && item.path);
                             var model = typeof item === 'object' && item && item.model;
+                            var thumb = typeof item === 'object' && item && item.thumbnail_url;
+                            var title = typeof item === 'object' && item && item.title;
+                            var channel = typeof item === 'object' && item && item.channel;
                             if (!path) return '';
                             var escaped = (path || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                             var stem = path.replace(/^.*\//, '').replace(/\.(mp4|mkv|avi)$/i, '');
                             var videoId = (stem.length === 11 && /^[a-zA-Z0-9_-]+$/.test(stem)) ? stem : null;
                             var link = (taUrl && videoId) ? (taUrl + '/video/' + videoId + '/') : null;
                             var linkHtml = link ? '<a href="' + link + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">' + escaped + '</a>' : escaped;
+                            var label = model || title || channel;
                             var modelHtml = '';
-                            if (model) {
-                                var m = ('' + model).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                                var href = (model.indexOf('http') === 0 ? model : 'https://' + model);
-                                modelHtml = ' <span class="text-gray-500 text-xs">— <a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">' + m + '</a></span>';
+                            if (label) {
+                                var m = ('' + label).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                                var href = (label.indexOf('http') === 0 ? label : (label.indexOf('www.') === 0 ? 'https://' + label : (label.indexOf('/') === 0 && taUrl ? taUrl + label : null)));
+                                modelHtml = '<div class="mt-1.5 text-gray-500 text-xs">— ' + (href ? '<a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">' + m + '</a>' : m) + '</div>';
                             }
-                            return '<div class="break-all select-text py-1 border-b border-gray-700 last:border-0">' + linkHtml + modelHtml + '</div>';
+                            var thumbSrc = videoId ? ('https://img.youtube.com/vi/' + videoId + '/hqdefault.jpg') : (thumb || '');
+                            var thumbHtml = thumbSrc ? '<img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-56 h-[126px] object-cover rounded shrink-0" loading="lazy">' : '';
+                            var thumbBlock = thumbSrc ? (link ? '<a href="' + link + '" target="_blank" rel="noopener" class="shrink-0">' + thumbHtml + '</a>' : '<span class="shrink-0">' + thumbHtml + '</span>') : '';
+                            return '<div class="py-2 border-b border-gray-700 last:border-0 flex items-start gap-3"><div class="flex-1 min-w-0 break-all select-text">' + linkHtml + modelHtml + '</div>' + thumbBlock + '</div>';
                         }).join('') || '<p class="text-gray-500">No source files.</p>';
                     } else {
                         this.body = (items || []).map(m => {

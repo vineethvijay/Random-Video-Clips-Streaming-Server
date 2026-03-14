@@ -176,18 +176,24 @@ script = os.environ.get('TUBEARCHIVIST_SCRIPT', '/scripts/tubearchivist_metadata
 sources = []
 for path in paths:
     model = None
+    thumb = None
+    title = None
+    channel = None
     if tube_url and tube_token:
         try:
             out = subprocess.run([sys.executable, script, tube_url, tube_token, path], capture_output=True, text=True, timeout=12)
             if out.returncode == 0:
                 d = json.loads(out.stdout or '{}')
                 model = d.get('model_info')
+                thumb = d.get('thumbnail_url')
+                title = d.get('title')
+                channel = d.get('channel')
         except: pass
-    sources.append({'path': path, 'model': model})
+    sources.append({'path': path, 'model': model, 'thumbnail_url': thumb, 'title': title, 'channel': channel})
 print(json.dumps(sources))
 " 2>/dev/null)
     if [ -z "$SOURCES_JSON" ] || [ "$SOURCES_JSON" = "[]" ]; then
-      SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "import sys,json; print(json.dumps([{'path': l.strip(), 'model': None} for l in sys.stdin if l.strip()]))" 2>/dev/null) || SOURCES_JSON="[]"
+      SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "import sys,json; print(json.dumps([{'path': l.strip(), 'model': None, 'thumbnail_url': None, 'title': None, 'channel': None} for l in sys.stdin if l.strip()]))" 2>/dev/null) || SOURCES_JSON="[]"
     fi
   fi
 

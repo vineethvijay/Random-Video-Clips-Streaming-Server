@@ -104,9 +104,15 @@ def _build_chunks_list(settings=None):
                             source_videos = []
                             for item in raw_sources:
                                 if isinstance(item, str):
-                                    source_videos.append({'path': item, 'model': None})
+                                    source_videos.append({'path': item, 'model': None, 'thumbnail_url': None, 'title': None, 'channel': None})
                                 elif isinstance(item, dict) and 'path' in item:
-                                    source_videos.append({'path': item['path'], 'model': item.get('model')})
+                                    source_videos.append({
+                                        'path': item['path'],
+                                        'model': item.get('model'),
+                                        'thumbnail_url': item.get('thumbnail_url'),
+                                        'title': item.get('title'),
+                                        'channel': item.get('channel'),
+                                    })
                             model_info = meta.get('model_info') or []
                             video_codec = meta.get('video_codec')
                             width = meta.get('width')
@@ -428,17 +434,20 @@ def _stats_context():
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
     play_counts = clip_pusher.get_play_counts()
-    # Enrich models with og:title and og:image (cached)
+    # Enrich models with og:title, og:image, and YouTube thumbnail (when video_id available)
     models_enriched = []
-    for model, count in play_counts.get('models', []):
+    for item in play_counts.get('models', []):
+        model, count = item[0], item[1]
+        video_id = item[2] if len(item) > 2 else None
         url = model if model.startswith('http') else 'https://' + model
         meta = _fetch_og_meta(url)
         title = html.unescape(meta.get('title') or url)
+        thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else meta.get('image')
         models_enriched.append({
             'url': url,
             'count': count,
             'title': title,
-            'image': meta.get('image'),
+            'image': thumbnail,
         })
     play_counts = dict(play_counts, models=models_enriched)
     return {'stream_stats': stream_stats, 'play_counts': play_counts}

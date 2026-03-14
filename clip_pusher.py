@@ -162,6 +162,13 @@ class ClipPusher:
         except OSError:
             pass
 
+    def _extract_video_id(self, path: str) -> Optional[str]:
+        """Extract 11-char YouTube video ID from path (e.g. .../UCxxx/abc123.mp4 -> abc123)."""
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if stem and len(stem) == 11 and stem.replace('-', '').replace('_', '').isalnum():
+            return stem
+        return None
+
     def _record_play_count(self, chunk_path: str, audio_name: Optional[str]) -> None:
         """Record play count for models (from chunk meta) and audio (current track)."""
         data = self._load_play_counts()
@@ -173,9 +180,31 @@ class ClipPusher:
             try:
                 with open(meta_path, 'r') as f:
                     meta = json.load(f)
+                raw_sources = meta.get('source_videos') or []
+                model_to_video = {}
+                fallback_vid = None
+                for item in raw_sources:
+                    path = item.get('path') if isinstance(item, dict) else (item if isinstance(item, str) else None)
+                    model = item.get('model') if isinstance(item, dict) else None
+                    if path:
+                        vid = self._extract_video_id(path)
+                        if vid:
+                            if not fallback_vid:
+                                fallback_vid = vid
+                            if model and model not in model_to_video:
+                                model_to_video[model] = vid
                 for m in (meta.get('model_info') or []):
                     if m:
-                        models[m] = models.get(m, 0) + 1
+                        vid = model_to_video.get(m) or fallback_vid
+                        entry = models.get(m)
+                        if isinstance(entry, dict):
+                            entry['count'] = entry.get('count', 0) + 1
+                            if vid:
+                                entry['video_id'] = vid
+                        elif isinstance(entry, (int, float)):
+                            models[m] = {'count': entry + 1, 'video_id': vid} if vid else entry + 1
+                        else:
+                            models[m] = {'count': 1, 'video_id': vid} if vid else 1
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -191,7 +220,13 @@ class ClipPusher:
         data = self._load_play_counts()
         models = data.get('models', {})
         audio = data.get('audio', {})
-        top_models = sorted(models.items(), key=lambda x: -x[1])[:20]
+        top_models = []
+        for url, entry in models.items():
+            count = entry.get('count', entry) if isinstance(entry, dict) else entry
+            video_id = entry.get('video_id') if isinstance(entry, dict) else None
+            top_models.append((url, count, video_id))
+        top_models.sort(key=lambda x: -x[1])
+        top_models = top_models[:20]
         top_audio = sorted(audio.items(), key=lambda x: -x[1])[:20]
         return {'models': top_models, 'audio': top_audio}
 
