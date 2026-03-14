@@ -200,6 +200,7 @@ The **Chunk Generator** supports both CPU encoding (`libx264`) and NVIDIA hardwa
 | POST | `/api/generate_chunk` | Triggers the generator to build new chunks |
 | POST | `/api/skip_to_next` | Skip current chunk and advance to next (audio position preserved) |
 | POST | `/api/skip_to_next_audio` | Skip to the next audio track |
+| POST | `/api/play_chunk` | Play a specific chunk next in the live stream (body: `{"chunk_name": "xyz.mp4"}`) |
 
 ## Troubleshooting
 

@@ -61,6 +61,8 @@ class ClipPusher:
         self._errors         = 0
         self._last_error: Optional[str] = None
         self._streamer_process: Optional[subprocess.Popen] = None
+        self._play_chunk_next: Optional[str] = None
+        self._play_chunk_lock = threading.Lock()
 
         self._load_stream_stats()
 
@@ -262,6 +264,19 @@ class ClipPusher:
             return True
         return False
 
+    def play_chunk(self, chunk_name: str) -> bool:
+        """Queue a specific chunk to play next in the stream. Stops current chunk if running."""
+        base = os.path.basename(chunk_name)
+        if not base.endswith('.mp4'):
+            return False
+        path = os.path.join(self.chunk_folder, base)
+        if not os.path.isfile(path):
+            return False
+        with self._play_chunk_lock:
+            self._play_chunk_next = base
+        self.skip_to_next()
+        return True
+
     # ── Internal ──────────────────────────────────────────────────
 
     def _get_audio_file(self) -> Optional[str]:
@@ -383,6 +398,15 @@ class ClipPusher:
                 
             random.shuffle(chunks)
 
+            with self._play_chunk_lock:
+                next_name = self._play_chunk_next
+                if next_name:
+                    self._play_chunk_next = None
+                    full = os.path.join(self.chunk_folder, next_name)
+                    if full in chunks:
+                        chunks.remove(full)
+                        chunks.insert(0, full)
+
             # Pick one audio track for the whole round; get duration so we can resume position across chunks
             if self._audio_files:
                 if self._persistent_audio_path is None or not os.path.isfile(self._persistent_audio_path):
@@ -436,6 +460,10 @@ class ClipPusher:
                         self._streamer_process.wait(timeout=5)
                     except:
                         self._streamer_process.kill()
+
+                with self._play_chunk_lock:
+                    if self._play_chunk_next:
+                        break
 
         print("Clip pusher loop ended")
 
