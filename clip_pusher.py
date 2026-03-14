@@ -14,6 +14,7 @@ from typing import List, Optional
 
 STREAM_STATS_FILENAME = ".stream_stats.json"
 CHUNKS_CREATED_FILENAME = ".chunks_created_total"
+PLAY_COUNTS_FILENAME = ".play_counts.json"
 
 # ── Output normalization ──────────────────────────────────────────
 OUTPUT_AUDIO_RATE    = 44100
@@ -136,6 +137,61 @@ class ClipPusher:
                 return int(f.read().strip())
         except (ValueError, OSError):
             return None
+
+    def _play_counts_path(self) -> str:
+        return os.path.join(self._stats_dir, PLAY_COUNTS_FILENAME)
+
+    def _load_play_counts(self) -> dict:
+        path = self._play_counts_path()
+        if os.path.isfile(path):
+            try:
+                with open(path, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {'models': {}, 'audio': {}}
+
+    def _save_play_counts(self, data: dict) -> None:
+        path = self._play_counts_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except OSError:
+            pass
+
+    def _record_play_count(self, chunk_path: str, audio_name: Optional[str]) -> None:
+        """Record play count for models (from chunk meta) and audio (current track)."""
+        data = self._load_play_counts()
+        models = data.get('models', {})
+        audio = data.get('audio', {})
+
+        meta_path = chunk_path.replace('.mp4', '.meta.json')
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+                for m in (meta.get('model_info') or []):
+                    if m:
+                        models[m] = models.get(m, 0) + 1
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if audio_name:
+            audio[audio_name] = audio.get(audio_name, 0) + 1
+
+        data['models'] = models
+        data['audio'] = audio
+        self._save_play_counts(data)
+
+    def get_play_counts(self) -> dict:
+        """Return top models and audio by play count."""
+        data = self._load_play_counts()
+        models = data.get('models', {})
+        audio = data.get('audio', {})
+        top_models = sorted(models.items(), key=lambda x: -x[1])[:20]
+        top_audio = sorted(audio.items(), key=lambda x: -x[1])[:20]
+        return {'models': top_models, 'audio': top_audio}
 
     def get_status(self) -> dict:
         hours_played = round(self._total_seconds_streamed / 3600, 2) if self._total_seconds_streamed else 0
@@ -371,6 +427,7 @@ class ClipPusher:
                     self._audio_position = (self._audio_position + advance) % self._persistent_audio_duration
                 self._total_seconds_streamed += advance
                 self._save_stream_stats()
+                self._record_play_count(chunk, self._current_audio)
 
                 # Cleanup process before next iteration
                 if self._streamer_process and self._streamer_process.poll() is None:

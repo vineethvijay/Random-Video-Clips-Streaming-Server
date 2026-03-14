@@ -18,6 +18,7 @@
                 <nav class="flex gap-2">
                     <a href="/" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Dashboard</a>
                     <a href="/admin" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded font-medium text-sm">Admin</a>
+                    <a href="/stats" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Stats</a>
                 </nav>
             </div>
             <div class="flex gap-2">
@@ -30,6 +31,7 @@
                          class="absolute right-0 top-full mt-1 py-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50">
                         <a href="/" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET / (Dashboard)</a>
                         <a href="/admin" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /admin</a>
+                        <a href="/stats" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /stats</a>
                         <a href="/iptv.m3u" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /iptv.m3u</a>
                         <a href="/api/status" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/status</a>
                         <a href="/api/stream-status" target="_blank" class="block px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 hover:text-white">GET /api/stream-status</a>
@@ -150,25 +152,6 @@
                         <button type="button" id="cron-btn-next" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
                     </div>
                 </div>
-            </div>
-
-            <!-- Stream Stats -->
-            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Stream Stats</h3>
-                <ul class="space-y-4 text-sm text-gray-300">
-                    <li class="flex justify-between border-b border-gray-700 pb-2">
-                        <span class="text-gray-500">Time played</span>
-                        <span class="font-mono">{{ stream_stats.time_played if stream_stats.time_played else '—' }}</span>
-                    </li>
-                    <li class="flex justify-between border-b border-gray-700 pb-2">
-                        <span class="text-gray-500">Chunks pushed (this process)</span>
-                        <span class="font-mono">{{ stream_stats.chunks_pushed if stream_stats.chunks_pushed is not none else '—' }}</span>
-                    </li>
-                    <li class="flex justify-between pb-1">
-                        <span class="text-gray-500">Chunks ever created</span>
-                        <span class="font-mono">{{ stream_stats.chunks_created_total if stream_stats.chunks_created_total is not none else '—' }}</span>
-                    </li>
-                </ul>
             </div>
 
             <!-- System Information -->

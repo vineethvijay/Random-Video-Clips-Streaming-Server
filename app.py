@@ -5,9 +5,12 @@ Main Flask application
 Pushes pre-generated chunks to RTMP server for continuous live streaming
 """
 
+import json
 import os
+import re
 import signal
 import sys
+import urllib.request
 from flask import Flask, jsonify, request, Response, render_template, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -345,19 +348,13 @@ def _admin_context():
         'chunks_total_mb': chunks_total_mb, 'chunks_count': chunks_count,
         'chunk_mount_total_mb': chunk_mount_total_mb, 'chunk_mount_available_mb': chunk_mount_available_mb,
     }
-    stream_stats = {
-        'time_played': _format_time_played(current_status.get('total_seconds_streamed')),
-        'chunks_pushed': current_status.get('chunks_pushed'),
-        'chunks_created_total': current_status.get('chunks_created_total'),
-        'total_seconds_streamed': current_status.get('total_seconds_streamed'),
-    }
     host_cron_schedule = (settings.get('CRON_SCHEDULE') or '0 2 * * *').strip()
     host_cron_port = EXTERNAL_PORT
     host_cron_log = 'stats/cron.log'
     cron_available = _cron_available()
     cron_schedule, cron_command = _cron_get_job() if cron_available else (None, None)
     return {
-        'settings': settings, 'sys_info': sys_info, 'stream_stats': stream_stats,
+        'settings': settings, 'sys_info': sys_info,
         'host_cron_schedule': host_cron_schedule, 'host_cron_port': host_cron_port, 'host_cron_log': host_cron_log,
         'cron_available': cron_available, 'cron_schedule': cron_schedule, 'cron_command': cron_command,
     }
@@ -365,9 +362,83 @@ def _admin_context():
 
 @app.route('/admin')
 def admin():
-    """Admin page: Server Configuration, Stream Stats, Cron history, System Information"""
+    """Admin page: Server Configuration, Cron history, System Information"""
     ctx = _admin_context()
     return render_template('admin.html', **ctx)
+
+
+def _fetch_og_meta(url: str, timeout: float = 4.0) -> dict:
+    """Fetch og:title and og:image from URL. Returns {title, image} or empty dict on failure."""
+    if not url or not url.startswith(('http://', 'https://')):
+        return {}
+    cache_dir = STATS_DIR or CHUNK_FOLDER
+    cache_path = os.path.join(cache_dir, '.model_meta_cache.json')
+    cache = {}
+    if os.path.isfile(cache_path):
+        try:
+            with open(cache_path, 'r') as f:
+                cache = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    if url in cache:
+        return cache[url]
+    result = {}
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; StreamStats/1.0)'})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            html = resp.read().decode('utf-8', errors='replace')
+        m_title = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        if not m_title:
+            m_title = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', html, re.I)
+        m_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        if not m_image:
+            m_image = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.I)
+        if m_title:
+            result['title'] = m_title.group(1).strip()[:120]
+        if m_image:
+            result['image'] = m_image.group(1).strip()
+    except Exception:
+        pass
+    cache[url] = result
+    try:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, 'w') as f:
+            json.dump(cache, f, indent=2)
+    except OSError:
+        pass
+    return result
+
+
+def _stats_context():
+    """Build stream_stats and play_counts for stats page."""
+    current_status = clip_pusher.get_status()
+    stream_stats = {
+        'time_played': _format_time_played(current_status.get('total_seconds_streamed')),
+        'chunks_pushed': current_status.get('chunks_pushed'),
+        'chunks_created_total': current_status.get('chunks_created_total'),
+        'total_seconds_streamed': current_status.get('total_seconds_streamed'),
+    }
+    play_counts = clip_pusher.get_play_counts()
+    # Enrich models with og:title and og:image (cached)
+    models_enriched = []
+    for model, count in play_counts.get('models', []):
+        url = model if model.startswith('http') else 'https://' + model
+        meta = _fetch_og_meta(url)
+        models_enriched.append({
+            'url': url,
+            'count': count,
+            'title': meta.get('title') or url,
+            'image': meta.get('image'),
+        })
+    play_counts = dict(play_counts, models=models_enriched)
+    return {'stream_stats': stream_stats, 'play_counts': play_counts}
+
+
+@app.route('/stats')
+def stats():
+    """Stats page: Stream stats, top models, top audio by play count"""
+    ctx = _stats_context()
+    return render_template('stats.html', **ctx)
 
 
 @app.route('/iptv.m3u')
