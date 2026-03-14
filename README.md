@@ -195,6 +195,7 @@ The **Chunk Generator** supports both CPU encoding (`libx264`) and NVIDIA hardwa
 | GET | `/api/stream-status` | RTMP pusher & current chunk/audio, hours played, chunks created |
 | GET | `/api/system-usage` | Live CPU %, memory %, GPU % (for dashboard polling) |
 | GET | `/chunks/<filename>` | Serve a chunk file (e.g. for “Play” in dashboard) |
+| GET | `/audio/<path>` | Serve an audio file for playback in browser |
 | GET | `/iptv.m3u` | IPTV playlist (M3U) for external players |
 | POST | `/api/generate_chunk` | Triggers the generator to build new chunks |
 | POST | `/api/skip_to_next` | Skip current chunk and advance to next (audio position preserved) |

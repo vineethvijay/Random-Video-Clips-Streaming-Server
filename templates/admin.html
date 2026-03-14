@@ -155,8 +155,8 @@
                 <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Stream Stats</h3>
                 <ul class="space-y-4 text-sm text-gray-300">
                     <li class="flex justify-between border-b border-gray-700 pb-2">
-                        <span class="text-gray-500">Hours played</span>
-                        <span class="font-mono">{{ stream_stats.hours_played if stream_stats.hours_played is not none else '—' }}</span>
+                        <span class="text-gray-500">Time played</span>
+                        <span class="font-mono">{{ stream_stats.time_played if stream_stats.time_played else '—' }}</span>
                     </li>
                     <li class="flex justify-between border-b border-gray-700 pb-2">
                         <span class="text-gray-500">Chunks pushed (this process)</span>

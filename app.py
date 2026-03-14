@@ -53,6 +53,25 @@ clip_pusher = ClipPusher(CHUNK_FOLDER, RTMP_URL,
 INITIAL_CHUNKS_LIMIT = 20
 
 
+def _format_time_played(seconds):
+    """Format seconds as y,m,d,h (e.g. '1y 2m 3d 4h')."""
+    if seconds is None or seconds < 0:
+        return None
+    sec = int(seconds)
+    if sec == 0:
+        return '0h'
+    y, r = divmod(sec, 365 * 24 * 3600)
+    m, r = divmod(r, 30 * 24 * 3600)
+    d, r = divmod(r, 24 * 3600)
+    h = r // 3600
+    parts = []
+    if y: parts.append(f'{y}y')
+    if m: parts.append(f'{m}m')
+    if d: parts.append(f'{d}d')
+    if h or not parts: parts.append(f'{h}h')
+    return ' '.join(parts)
+
+
 def _build_chunks_list(settings=None):
     """Build chunks list (no ffprobe). settings used for days_to_expire."""
     from datetime import datetime
@@ -146,8 +165,11 @@ def index():
                     path = os.path.join(root, f)
                     try:
                         stat = os.stat(path)
+                        rel_path = os.path.relpath(path, AUDIO_FOLDER)
                         audio_files.append({
                             'name': os.path.basename(path),
+                            'path': path,
+                            'rel_path': rel_path,
                             'size_mb': round(stat.st_size / (1024 * 1024), 2)
                         })
                     except OSError:
@@ -238,14 +260,15 @@ def index():
         'audio_track_duration_sec': current_status.get('audio_track_duration_sec'),
     }
     stream_stats = {
-        'hours_played': current_status.get('hours_played'),
+        'time_played': _format_time_played(current_status.get('total_seconds_streamed')),
         'chunks_pushed': current_status.get('chunks_pushed'),
         'chunks_created_total': current_status.get('chunks_created_total'),
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
     current_chunk_data = next((c for c in chunks if c['name'] == current_chunk), None) if current_chunk else None
     chunks_excluding_current = [c for c in chunks if c['name'] != current_chunk]
-    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
+    show_model_column = bool((settings.get('TUBEARCHIVIST_URL') or '').strip() and (settings.get('TUBEARCHIVIST_TOKEN') or '').strip())
+    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, show_model_column=show_model_column, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
 
 
 def _admin_context():
@@ -323,7 +346,7 @@ def _admin_context():
         'chunk_mount_total_mb': chunk_mount_total_mb, 'chunk_mount_available_mb': chunk_mount_available_mb,
     }
     stream_stats = {
-        'hours_played': current_status.get('hours_played'),
+        'time_played': _format_time_played(current_status.get('total_seconds_streamed')),
         'chunks_pushed': current_status.get('chunks_pushed'),
         'chunks_created_total': current_status.get('chunks_created_total'),
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
@@ -647,6 +670,56 @@ def skip_to_next_audio():
     """Skip to the next audio track."""
     skipped = clip_pusher.skip_to_next_audio()
     return jsonify({'success': True, 'skipped': skipped})
+
+
+@app.route('/api/delete_audio', methods=['POST'])
+def delete_audio():
+    """Delete an audio file from the filesystem. Requires path within AUDIO_FOLDER."""
+    if not AUDIO_FOLDER:
+        return jsonify({'success': False, 'error': 'AUDIO_FOLDER not configured'}), 400
+    data = request.get_json()
+    path = data.get('path') if data else None
+    if not path or not isinstance(path, str):
+        return jsonify({'success': False, 'error': 'Missing or invalid path'}), 400
+    abs_path = os.path.abspath(path)
+    abs_audio = os.path.abspath(AUDIO_FOLDER)
+    if not abs_path.startswith(abs_audio):
+        return jsonify({'success': False, 'error': 'Path must be within AUDIO_FOLDER'}), 400
+    if not os.path.isfile(abs_path):
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+    try:
+        os.remove(abs_path)
+        return jsonify({'success': True})
+    except OSError as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+AUDIO_MIMETYPES = {
+    '.mp3': 'audio/mpeg',
+    '.aac': 'audio/aac',
+    '.flac': 'audio/flac',
+    '.ogg': 'audio/ogg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+}
+
+
+@app.route('/audio/<path:relpath>')
+def serve_audio(relpath):
+    """Serve an audio file for playback in the browser (read-only, path within AUDIO_FOLDER)."""
+    if not AUDIO_FOLDER:
+        return jsonify({'error': 'AUDIO_FOLDER not configured'}), 400
+    if not relpath or '..' in relpath:
+        return jsonify({'error': 'Invalid path'}), 400
+    path = os.path.normpath(os.path.join(AUDIO_FOLDER, relpath))
+    if not os.path.abspath(path).startswith(os.path.abspath(AUDIO_FOLDER)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isfile(path):
+        return jsonify({'error': 'Not found'}), 404
+    ext = os.path.splitext(path)[1].lower()
+    mimetype = AUDIO_MIMETYPES.get(ext, 'audio/mpeg')
+    return send_file(path, mimetype=mimetype, as_attachment=False)
+
 
 @app.route('/chunks/<path:filename>')
 def serve_chunk(filename):

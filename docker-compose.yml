@@ -76,7 +76,7 @@ services:
     ports:
       - "${PORT:-8081}:8080"
     volumes:
-      - ${AUDIO_FOLDER:-./audio}:/audio:ro
+      - ${AUDIO_FOLDER:-./audio}:/audio
       - ${CHUNK_FOLDER:-./chunks}:/chunks
       - ${STATS_DIR:-./stats}:/app/stats
       - trigger_volume:/app/trigger
