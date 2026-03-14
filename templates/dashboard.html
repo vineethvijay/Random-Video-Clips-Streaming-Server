@@ -7,6 +7,7 @@
     <title>Random Video Clips Streaming Server</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231e3a8a'/%3E%3Cpath fill='%2393c5fd' d='M12 9v14l10-7z'/%3E%3Cpath fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-linecap='round' d='M20 11c2 0 3 1.5 3 3s-1 3-3 3m0-6c3 0 5 2 5 5s-2 5-5 5'/%3E%3C/svg%3E">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
         .chunk-row.now-playing { background-color: rgba(30, 58, 138, 0.5); border-left: 4px solid rgb(96, 165, 250); box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5); }
@@ -24,21 +25,27 @@
         @keyframes stream-title-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
         .toast-popup { animation: toast-fade-in 0.2s ease-out; }
         @keyframes toast-fade-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
-        #sources-modal { transition: opacity 0.2s ease-out; }
-        #sources-modal:not(.open) { opacity: 0; pointer-events: none; }
+        [x-cloak] { display: none !important; }
     </style>
 </head>
 
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <div id="toast-container" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col items-center gap-2"></div>
-    <!-- Sources modal -->
-    <div id="sources-modal" class="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/70">
-        <div class="bg-gray-800 rounded-lg shadow-xl border border-gray-600 max-w-2xl w-full max-h-[80vh] flex flex-col">
+    <!-- Sources/Models modal (Alpine) -->
+    <div x-data="modal()" x-cloak
+         @open-sources.window="show($event.detail.chunk, $event.detail.sources, 'sources')"
+         @open-models.window="show($event.detail.chunk, $event.detail.models, 'models')"
+         x-show="isOpen"
+         x-transition
+         @keydown.escape.window="isOpen = false"
+         class="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/70">
+        <div @click.away="isOpen = false"
+             class="bg-gray-800 rounded-lg shadow-xl border border-gray-600 max-w-2xl w-full max-h-[80vh] flex flex-col">
             <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
-                <h3 id="sources-modal-title" class="text-lg font-semibold text-white">Source files</h3>
-                <button type="button" id="sources-modal-close" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                <h3 x-text="title" class="text-lg font-semibold text-white"></h3>
+                <button type="button" @click="isOpen = false" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
-            <div id="sources-modal-body" class="p-6 overflow-y-auto font-mono text-sm text-gray-300 space-y-2"></div>
+            <div class="p-6 overflow-y-auto font-mono text-sm text-gray-300 space-y-2" x-html="body"></div>
         </div>
     </div>
     <div class="max-w-6xl mx-auto px-4 py-8">
@@ -49,17 +56,21 @@
                 <nav class="flex gap-2">
                     <a href="/" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded font-medium text-sm">Dashboard</a>
                     <a href="/admin" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Admin</a>
+                    <a href="/stats" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Stats</a>
                 </nav>
             </div>
                 <a href="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8" target="_blank"
                 class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition">▶️ Stream URL</a>
         </header>
 
-        <!-- Live stream (HLS.js) – collapsible section, start collapsed -->
-        <section id="stream-player-card" class="mb-8 bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden collapsed" data-hls-url="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8">
-            <div class="stream-player-toggle px-4 py-2.5 border-b border-gray-700 flex items-center justify-between hover:bg-gray-700/50 transition-colors" title="Click to expand or collapse">
+        <!-- Live stream (HLS.js) – collapsible section, start collapsed (Alpine) -->
+        <section id="stream-player-card" x-data="streamPlayer()"
+                 class="mb-8 bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden"
+                 :class="{ 'collapsed': collapsed }"
+                 data-hls-url="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8">
+            <div @click="toggle()" class="stream-player-toggle px-4 py-2.5 border-b border-gray-700 flex items-center justify-between hover:bg-gray-700/50 transition-colors cursor-pointer" title="Click to expand or collapse">
                 <h2 class="text-lg font-semibold flex items-center gap-2">
-                    <span class="stream-player-chevron text-gray-400">▶</span>
+                    <span class="text-gray-400" x-text="collapsed ? '▶' : '▼'"></span>
                     <span class="stream-player-title">Live stream</span>
                     <span id="stream-player-play-state" class="text-sm stream-player-play-state-text" title="Playing / Paused">—</span>
                 </h2>
@@ -69,11 +80,11 @@
                 <div class="aspect-video bg-black border-t border-gray-700">
                     <video id="stream-player" class="w-full h-full" controls playsinline muted></video>
                 </div>
-        </div>
+            </div>
         </section>
 
         <div class="space-y-6">
-                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden">
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden" x-data="{ search: '', sort: 'date-desc' }">
                     <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex flex-col gap-3">
                         <div class="flex items-center gap-2">
                             <h2 class="text-xl font-semibold text-white shrink-0">Generated Video Chunks</h2>
@@ -83,8 +94,10 @@
                             <span id="chunks-count-badge" class="bg-indigo-900 text-indigo-200 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide shrink-0">{{ chunks|length }} Chunks</span>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 justify-center">
-                            <input type="text" id="chunks-search" placeholder="Filter by filename…" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
-                            <select id="chunks-sort" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
+                            <input type="text" id="chunks-search" placeholder="Filter by filename…" x-model="search" @input="window._applyChunksFilter?.()" @keydown.escape="search = ''; window._applyChunksFilter?.()"
+                                   class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
+                            <select id="chunks-sort" x-model="sort" @change="window._applyChunksFilter?.()"
+                                    class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
                                 <option value="date-desc">Date (newest first)</option>
                                 <option value="date-asc">Date (oldest first)</option>
                                 <option value="name-asc">Name (A–Z)</option>
@@ -185,7 +198,7 @@ Created: {{ chunk.created_at }}</div>
                             </div>
 
                 <!-- Audio files (below chunks) -->
-                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6">
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6" x-data="{ search: '', sort: 'name-asc' }">
                     <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex flex-col gap-3">
                         <div class="flex items-center gap-2">
                             <h2 class="text-xl font-semibold text-white shrink-0">Audio Files</h2>
@@ -198,8 +211,10 @@ Created: {{ chunk.created_at }}</div>
                                 </div>
                         {% if audio_files %}
                         <div class="flex flex-wrap items-center gap-2 justify-center">
-                            <input type="text" id="audio-search" placeholder="Filter by filename…" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
-                            <select id="audio-sort" class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
+                            <input type="text" id="audio-search" placeholder="Filter by filename…" x-model="search" @input="window._applyAudioFilter?.()" @keydown.escape="search = ''; window._applyAudioFilter?.()"
+                                   class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
+                            <select id="audio-sort" x-model="sort" @change="window._applyAudioFilter?.()"
+                                    class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
                                 <option value="name-asc">Name (A–Z)</option>
                                 <option value="name-desc">Name (Z–A)</option>
                                 <option value="size-desc">Size (largest first)</option>
@@ -262,6 +277,79 @@ Created: {{ chunk.created_at }}</div>
     </div>
 
     <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('streamPlayer', () => ({
+                collapsed: true,
+                hlsLoaded: false,
+                toggle() {
+                    this.collapsed = !this.collapsed;
+                    if (!this.collapsed && !this.hlsLoaded) this.initHls();
+                },
+                initHls() {
+                    if (this.hlsLoaded) return;
+                    const card = document.getElementById('stream-player-card');
+                    const video = document.getElementById('stream-player');
+                    const statusEl = document.getElementById('stream-player-status');
+                    const streamUrl = card && card.getAttribute('data-hls-url');
+                    if (!video || !statusEl || !streamUrl) return;
+                    const setStatus = (text, isError) => {
+                        statusEl.textContent = text;
+                        statusEl.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400');
+                    };
+                    const playStateEl = document.getElementById('stream-player-play-state');
+                    if (playStateEl) {
+                        video.addEventListener('play', () => { playStateEl.textContent = 'Playing'; playStateEl.title = 'Playing'; });
+                        video.addEventListener('pause', () => { playStateEl.textContent = 'Paused'; playStateEl.title = 'Paused'; });
+                    }
+                    const attachHls = () => {
+                        if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                            const hls = new Hls({ enableWorker: true });
+                            hls.loadSource(streamUrl);
+                            hls.attachMedia(video);
+                            hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus('Live'));
+                            hls.on(Hls.Events.ERROR, (e, data) => {
+                                if (data.fatal) {
+                                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setStatus('Network error – is the stream up?', true);
+                                    else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setStatus('Media error', true);
+                                    else setStatus('Error', true);
+                                }
+                            });
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                            video.src = streamUrl;
+                            setStatus('Live');
+                        } else {
+                            setStatus('HLS not supported in this browser', true);
+                        }
+                    };
+                    if (typeof Hls !== 'undefined') {
+                        attachHls();
+                    } else {
+                        const s = document.createElement('script');
+                        s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.7';
+                        s.onload = attachHls;
+                        document.head.appendChild(s);
+                    }
+                    this.hlsLoaded = true;
+                }
+            }));
+            Alpine.data('modal', () => ({
+                isOpen: false,
+                title: '',
+                body: '',
+                show(chunk, items, type) {
+                    this.title = type === 'sources' ? 'Source files: ' + (chunk || '') : 'Models: ' + (chunk || '');
+                    if (type === 'sources') {
+                        this.body = (items || []).map(p => '<div class="break-all select-text py-1 border-b border-gray-700 last:border-0">' + (p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>').join('') || '<p class="text-gray-500">No source files.</p>';
+                    } else {
+                        this.body = (items || []).map(m => {
+                            const href = (m.indexOf('http') === 0 ? m : 'https://' + m);
+                            return '<div class="py-1 border-b border-gray-700 last:border-0"><a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 break-all">' + (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</a></div>';
+                        }).join('') || '<p class="text-gray-500">No models.</p>';
+                    }
+                    this.isOpen = true;
+                }
+            }));
+        });
         (function () {
             const CHUNKS_PER_PAGE = 5;
             const tbody = document.getElementById('chunks-tbody');
@@ -386,33 +474,6 @@ Created: {{ chunk.created_at }}</div>
                 return m + ':' + (s < 10 ? '0' : '') + s;
             }
 
-            function showSourcesModal(chunkName, sources) {
-                var modal = document.getElementById('sources-modal');
-                var title = document.getElementById('sources-modal-title');
-                var body = document.getElementById('sources-modal-body');
-                if (!modal || !title || !body) return;
-                title.textContent = 'Source files: ' + (chunkName || '');
-                body.innerHTML = (sources || []).map(function(p) {
-                    return '<div class="break-all select-text py-1 border-b border-gray-700 last:border-0">' + (p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
-                }).join('') || '<p class="text-gray-500">No source files.</p>';
-                modal.classList.add('open');
-            }
-            function showModelModal(chunkName, models) {
-                var modal = document.getElementById('sources-modal');
-                var title = document.getElementById('sources-modal-title');
-                var body = document.getElementById('sources-modal-body');
-                if (!modal || !title || !body) return;
-                title.textContent = 'Models: ' + (chunkName || '');
-                body.innerHTML = (models || []).map(function(m) {
-                    var href = (m.indexOf('http') === 0 ? m : 'https://' + m);
-                    return '<div class="py-1 border-b border-gray-700 last:border-0"><a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 break-all">' + (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</a></div>';
-                }).join('') || '<p class="text-gray-500">No models.</p>';
-                modal.classList.add('open');
-            }
-            function hideSourcesModal() {
-                var modal = document.getElementById('sources-modal');
-                if (modal) modal.classList.remove('open');
-            }
             function buildMetadataContent(meta) {
                 var lines = [];
                 if (meta && meta.video_codec) {
@@ -586,18 +647,12 @@ Created: {{ chunk.created_at }}</div>
                         if (audioName) updateNowPlayingAudio(audioName, startedAt, duration, audioPos, audioTrackDur);
                     }).catch(function () {});
                 }
+            window._applyChunksFilter = applyFilterAndSort;
             applyFilterAndSort();
             var btnPrev = document.getElementById('btn-prev');
             var btnNext = document.getElementById('btn-next');
-            var searchEl = document.getElementById('chunks-search');
-            var sortEl = document.getElementById('chunks-sort');
             if (btnPrev) btnPrev.addEventListener('click', function () { showPage(currentPage - 1); });
             if (btnNext) btnNext.addEventListener('click', function () { showPage(currentPage + 1); });
-            if (searchEl) {
-                searchEl.addEventListener('input', function() { applyFilterAndSort(); });
-                searchEl.addEventListener('keyup', function(e) { if (e.key === 'Escape') { this.value = ''; applyFilterAndSort(); } });
-            }
-            if (sortEl) sortEl.addEventListener('change', function() { applyFilterAndSort(); });
 
             (function audioSection() {
                 var AUDIO_PER_PAGE = 4;
@@ -696,14 +751,12 @@ Created: {{ chunk.created_at }}</div>
                     }
                 }
 
+                window._applyAudioFilter = applyAudioFilterAndSort;
                 audioRows = audioTbody ? Array.from(audioTbody.querySelectorAll('tr.audio-row[data-audio-page]')) : [];
                 audioTotal = audioTotalEl ? parseInt(audioTotalEl.textContent, 10) : 1;
                 if (audioRows.length > 0) showAudioPage(1);
                 document.getElementById('audio-btn-prev') && document.getElementById('audio-btn-prev').addEventListener('click', function() { showAudioPage(audioCurrentPage - 1); });
                 document.getElementById('audio-btn-next') && document.getElementById('audio-btn-next').addEventListener('click', function() { showAudioPage(audioCurrentPage + 1); });
-                document.getElementById('audio-search') && document.getElementById('audio-search').addEventListener('input', function() { applyAudioFilterAndSort(); });
-                document.getElementById('audio-search') && document.getElementById('audio-search').addEventListener('keyup', function(e) { if (e.key === 'Escape') { this.value = ''; applyAudioFilterAndSort(); } });
-                document.getElementById('audio-sort') && document.getElementById('audio-sort').addEventListener('change', function() { applyAudioFilterAndSort(); });
             })();
 
                 var initial = {{ (initial_stream_status or {}) | tojson }};
@@ -740,7 +793,7 @@ Created: {{ chunk.created_at }}</div>
                     var raw = srcBtn.getAttribute('data-sources') || '[]';
                     var sources = [];
                     try { sources = JSON.parse(raw.replace(/&quot;/g, '"')); } catch (_) {}
-                    showSourcesModal(chunk, sources);
+                    window.dispatchEvent(new CustomEvent('open-sources', { detail: { chunk: chunk, sources: sources } }));
                     return;
                 }
                 var modelBtn = e.target && e.target.closest('.chunk-model-btn');
@@ -750,12 +803,8 @@ Created: {{ chunk.created_at }}</div>
                     var raw = modelBtn.getAttribute('data-models') || '[]';
                     var models = [];
                     try { models = JSON.parse(raw.replace(/&quot;/g, '"')); } catch (_) {}
-                    showModelModal(chunk, models);
+                    window.dispatchEvent(new CustomEvent('open-models', { detail: { chunk: chunk, models: models } }));
                 }
-            });
-            document.getElementById('sources-modal-close') && document.getElementById('sources-modal-close').addEventListener('click', hideSourcesModal);
-            document.getElementById('sources-modal') && document.getElementById('sources-modal').addEventListener('click', function(e) {
-                if (e.target === this) hideSourcesModal();
             });
         })();
 
@@ -827,68 +876,6 @@ Created: {{ chunk.created_at }}</div>
                 btn.disabled = false;
             }
         });
-
-        // Live stream collapse/expand – load HLS.js only when expanded
-        (function () {
-            const card = document.getElementById('stream-player-card');
-            const toggle = card && card.querySelector('.stream-player-toggle');
-            const chevron = card && card.querySelector('.stream-player-chevron');
-            let hlsLoaded = false;
-            function initHlsPlayer() {
-                if (hlsLoaded) return;
-                hlsLoaded = true;
-                const video = document.getElementById('stream-player');
-                const statusEl = document.getElementById('stream-player-status');
-                const streamUrl = card.getAttribute('data-hls-url');
-                if (!video || !statusEl || !streamUrl) return;
-                function setStatus(text, isError) {
-                    statusEl.textContent = text;
-                    statusEl.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400');
-                }
-                var playStateEl = document.getElementById('stream-player-play-state');
-                if (playStateEl) {
-                    video.addEventListener('play', function () { playStateEl.textContent = 'Playing'; playStateEl.title = 'Playing'; });
-                    video.addEventListener('pause', function () { playStateEl.textContent = 'Paused'; playStateEl.title = 'Paused'; });
-                }
-                function attachHls() {
-                    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-                        const hls = new Hls({ enableWorker: true });
-                        hls.loadSource(streamUrl);
-                        hls.attachMedia(video);
-                        hls.on(Hls.Events.MANIFEST_PARSED, function () { setStatus('Live'); });
-                        hls.on(Hls.Events.ERROR, function (e, data) {
-                            if (data.fatal) {
-                                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setStatus('Network error – is the stream up?', true);
-                                else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setStatus('Media error', true);
-                                else setStatus('Error', true);
-                            }
-                        });
-                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        video.src = streamUrl;
-                        setStatus('Live');
-                    } else {
-                        setStatus('HLS not supported in this browser', true);
-                    }
-                }
-                if (typeof Hls !== 'undefined') {
-                    attachHls();
-                } else {
-                    const s = document.createElement('script');
-                    s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.7';
-                    s.onload = attachHls;
-                    document.head.appendChild(s);
-                }
-            }
-            if (toggle && chevron) {
-                toggle.addEventListener('click', function () {
-                    card.classList.toggle('collapsed');
-                    chevron.textContent = card.classList.contains('collapsed') ? '▶' : '▼';
-                    if (!card.classList.contains('collapsed')) initHlsPlayer();
-                });
-                if (card.classList.contains('collapsed')) chevron.textContent = '▶';
-                else { chevron.textContent = '▼'; initHlsPlayer(); }
-            }
-        })();
 
     </script>
     <script src="https://cdn.tailwindcss.com" defer></script>
