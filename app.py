@@ -5,6 +5,7 @@ Main Flask application
 Pushes pre-generated chunks to RTMP server for continuous live streaming
 """
 
+import html
 import json
 import os
 import re
@@ -98,7 +99,20 @@ def _build_chunks_list(settings=None):
                     try:
                         with open(meta_path, 'r') as _f:
                             meta = _json.load(_f)
-                            source_videos = meta.get('source_videos') or []
+                            raw_sources = meta.get('source_videos') or []
+                            # Normalize: support old [path, ...] and new [{path, model}, ...]
+                            source_videos = []
+                            for item in raw_sources:
+                                if isinstance(item, str):
+                                    source_videos.append({'path': item, 'model': None, 'thumbnail_url': None, 'title': None, 'channel': None})
+                                elif isinstance(item, dict) and 'path' in item:
+                                    source_videos.append({
+                                        'path': item['path'],
+                                        'model': item.get('model'),
+                                        'thumbnail_url': item.get('thumbnail_url'),
+                                        'title': item.get('title'),
+                                        'channel': item.get('channel'),
+                                    })
                             model_info = meta.get('model_info') or []
                             video_codec = meta.get('video_codec')
                             width = meta.get('width')
@@ -271,7 +285,8 @@ def index():
     current_chunk_data = next((c for c in chunks if c['name'] == current_chunk), None) if current_chunk else None
     chunks_excluding_current = [c for c in chunks if c['name'] != current_chunk]
     show_model_column = bool((settings.get('TUBEARCHIVIST_URL') or '').strip() and (settings.get('TUBEARCHIVIST_TOKEN') or '').strip())
-    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, show_model_column=show_model_column, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
+    tubearchivist_url = (settings.get('TUBEARCHIVIST_URL') or '').strip().rstrip('/')
+    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, show_model_column=show_model_column, tubearchivist_url=tubearchivist_url, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
 
 
 def _admin_context():
@@ -394,7 +409,7 @@ def _fetch_og_meta(url: str, timeout: float = 4.0) -> dict:
         if not m_image:
             m_image = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.I)
         if m_title:
-            result['title'] = m_title.group(1).strip()[:120]
+            result['title'] = html.unescape(m_title.group(1).strip())[:120]
         if m_image:
             result['image'] = m_image.group(1).strip()
     except Exception:
@@ -419,16 +434,20 @@ def _stats_context():
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
     play_counts = clip_pusher.get_play_counts()
-    # Enrich models with og:title and og:image (cached)
+    # Enrich models with og:title, og:image, and YouTube thumbnail (when video_id available)
     models_enriched = []
-    for model, count in play_counts.get('models', []):
+    for item in play_counts.get('models', []):
+        model, count = item[0], item[1]
+        video_id = item[2] if len(item) > 2 else None
         url = model if model.startswith('http') else 'https://' + model
         meta = _fetch_og_meta(url)
+        title = html.unescape(meta.get('title') or url)
+        thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else meta.get('image')
         models_enriched.append({
             'url': url,
             'count': count,
-            'title': meta.get('title') or url,
-            'image': meta.get('image'),
+            'title': title,
+            'image': thumbnail,
         })
     play_counts = dict(play_counts, models=models_enriched)
     return {'stream_stats': stream_stats, 'play_counts': play_counts}
@@ -741,6 +760,19 @@ def skip_to_next_audio():
     """Skip to the next audio track."""
     skipped = clip_pusher.skip_to_next_audio()
     return jsonify({'success': True, 'skipped': skipped})
+
+
+@app.route('/api/play_chunk', methods=['POST'])
+def play_chunk():
+    """Play a specific chunk next in the live stream."""
+    data = request.get_json()
+    chunk_name = data.get('chunk_name') if data else None
+    if not chunk_name or not isinstance(chunk_name, str):
+        return jsonify({'success': False, 'error': 'Missing or invalid chunk_name'}), 400
+    ok = clip_pusher.play_chunk(chunk_name)
+    if not ok:
+        return jsonify({'success': False, 'error': 'Chunk not found'}), 404
+    return jsonify({'success': True})
 
 
 @app.route('/api/delete_audio', methods=['POST'])

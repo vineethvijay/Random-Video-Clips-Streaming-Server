@@ -162,25 +162,43 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
     -c copy "$CHUNK_NAME" -loglevel error
 
-  # Write metadata: source videos (full paths), codec, resolution (for dashboard)
+  # Write metadata: source videos (full paths + model per source), codec, resolution (for dashboard)
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"
   SOURCES_JSON="[]"
-  [ -n "$SOURCE_BASENAMES" ] && SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))" 2>/dev/null) || SOURCES_JSON="[]"
-
-  # TubeArchivist metadata (model info from description) — when TUBEARCHIVIST_URL + TOKEN set
-  MODEL_JSON="[]"
-  if [ -n "${TUBEARCHIVIST_URL}" ] && [ -n "${TUBEARCHIVIST_TOKEN}" ]; then
-    TUBE_SCRIPT="${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}"
-    MODELS_TMP=$(mktemp)
-    for path in $(echo "$SOURCE_BASENAMES" | sort -u); do
-      [ -z "$path" ] && continue
-      out=$(python3 "$TUBE_SCRIPT" "$TUBEARCHIVIST_URL" "$TUBEARCHIVIST_TOKEN" "$path" 2>/dev/null || true)
-      model=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('model_info'); print(m if m else '')" 2>/dev/null || true)
-      [ -n "$model" ] && echo "$model" >> "$MODELS_TMP"
-    done
-    [ -f "$MODELS_TMP" ] && MODEL_JSON=$(sort -u "$MODELS_TMP" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))" 2>/dev/null) || true
-    rm -f "$MODELS_TMP"
+  if [ -n "$SOURCE_BASENAMES" ]; then
+    export TUBEARCHIVIST_URL TUBEARCHIVIST_TOKEN TUBEARCHIVIST_SCRIPT
+    SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "
+import sys, json, subprocess, os
+paths = [l.strip() for l in sys.stdin if l.strip()]
+tube_url = (os.environ.get('TUBEARCHIVIST_URL') or '').strip().rstrip('/')
+tube_token = (os.environ.get('TUBEARCHIVIST_TOKEN') or '').strip()
+script = os.environ.get('TUBEARCHIVIST_SCRIPT', '/scripts/tubearchivist_metadata.py')
+sources = []
+for path in paths:
+    model = None
+    thumb = None
+    title = None
+    channel = None
+    if tube_url and tube_token:
+        try:
+            out = subprocess.run([sys.executable, script, tube_url, tube_token, path], capture_output=True, text=True, timeout=12)
+            if out.returncode == 0:
+                d = json.loads(out.stdout or '{}')
+                model = d.get('model_info')
+                thumb = d.get('thumbnail_url')
+                title = d.get('title')
+                channel = d.get('channel')
+        except: pass
+    sources.append({'path': path, 'model': model, 'thumbnail_url': thumb, 'title': title, 'channel': channel})
+print(json.dumps(sources))
+" 2>/dev/null)
+    if [ -z "$SOURCES_JSON" ] || [ "$SOURCES_JSON" = "[]" ]; then
+      SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "import sys,json; print(json.dumps([{'path': l.strip(), 'model': None, 'thumbnail_url': None, 'title': None, 'channel': None} for l in sys.stdin if l.strip()]))" 2>/dev/null) || SOURCES_JSON="[]"
+    fi
   fi
+
+  # model_info = unique models from sources (for Models button)
+  MODEL_JSON=$(echo "$SOURCES_JSON" | python3 -c "import sys,json; s=json.load(sys.stdin); m= sorted(set(x.get('model') for x in s if x.get('model'))); print(json.dumps(m))" 2>/dev/null) || MODEL_JSON="[]"
 
   VIDEO_EXTRA=""
   if codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$CHUNK_NAME" 2>/dev/null) && \
