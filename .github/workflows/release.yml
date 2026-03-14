@@ -1,13 +1,14 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 jobs:
   release:
-    name: Create GitHub Release
+    name: Create Release on merge
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,10 +16,64 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Bump version from commits
+        id: version
+        run: |
+          # Conventional commits: feat! = major, feat = minor, fix = patch. Start from v1.0.0.
+          MERGE="${{ github.event.pull_request.merge_commit_sha }}"
+          # Commits in the PR (works for merge and squash)
+          COMMITS=$(git log $MERGE^1..$MERGE --format=%s 2>/dev/null || git log -1 --format=%s $MERGE)
+
+          # Conventional commits: feat! = major, feat = minor, fix = patch
+          BUMP="patch"
+          echo "$COMMITS" | grep -qE '^feat!|^feat\([^)]*\)!' && BUMP="major"
+          if [ "$BUMP" != "major" ]; then
+            echo "$COMMITS" | grep -qE '^feat(\([^)]*\))?:?' && BUMP="minor"
+          fi
+          if [ "$BUMP" != "major" ] && [ "$BUMP" != "minor" ]; then
+            echo "$COMMITS" | grep -qE '^fix(\([^)]*\))?:?' && BUMP="patch"
+          fi
+
+          # Get latest tag or use v1.0.0
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          [[ "$LATEST" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]] || LATEST="v0.0.0"
+          MAJOR=${BASH_REMATCH[1]:-0}
+          MINOR=${BASH_REMATCH[2]:-0}
+          PATCH=${BASH_REMATCH[3]:-0}
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+
+          # If no tags, start at v1.0.0
+          if [ "$LATEST" = "v0.0.0" ]; then
+            case "$BUMP" in
+              major) VERSION="v1.0.0" ;;
+              minor) VERSION="v1.0.0" ;;
+              patch) VERSION="v1.0.0" ;;
+            esac
+          else
+            VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "bump=$BUMP" >> $GITHUB_OUTPUT
+          echo "Bumped to $VERSION ($BUMP)"
+
+      - name: Write release body
+        run: |
+          echo '${{ toJSON(github.event.pull_request.body) }}' | jq -r 'if . == null or . == "" then "No description." else . end' > release_body.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha }}
+          body_path: release_body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
