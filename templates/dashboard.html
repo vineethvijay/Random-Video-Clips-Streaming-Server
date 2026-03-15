@@ -59,7 +59,7 @@
                     <a href="/stats" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded font-medium text-sm">Stats</a>
                 </nav>
             </div>
-                <a href="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8" target="_blank"
+                <a href="{{ hls_url }}" target="_blank"
                 class="bg-indigo-900 hover:bg-indigo-700 text-indigo-200 px-4 py-2 rounded shadow transition">▶️ Stream URL</a>
         </header>
 
@@ -67,14 +67,17 @@
         <section id="stream-player-card" x-data="streamPlayer()"
                  class="mb-8 bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden"
                  :class="{ 'collapsed': collapsed }"
-                 data-hls-url="http://{{ request.host.split(':')[0] }}:{{ hls_port }}/hls/stream.m3u8">
+                 data-hls-url="{{ hls_url }}"
+                 data-hls-port="{{ hls_port }}">
             <div @click="toggle()" class="stream-player-toggle px-4 py-2.5 border-b border-gray-700 flex items-center justify-between hover:bg-gray-700/50 transition-colors cursor-pointer" title="Click to expand or collapse">
                 <h2 class="text-lg font-semibold flex items-center gap-2">
                     <span class="text-gray-400" x-text="collapsed ? '▶' : '▼'"></span>
                     <span class="stream-player-title">Live stream</span>
                     <span id="stream-player-play-state" class="text-sm stream-player-play-state-text" title="Playing / Paused">—</span>
                 </h2>
-                <span id="stream-player-status" class="text-xs text-gray-400">Loading…</span>
+                <div class="flex items-center gap-3" @click.stop>
+                    <span id="stream-player-status" class="text-xs text-gray-400">Loading…</span>
+                </div>
             </div>
             <div class="stream-player-body">
                 <div class="aspect-video bg-black border-t border-gray-700">
@@ -130,7 +133,7 @@
                                             {% if show_model_column | default(false) and m.model_info %}
                                             <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-models='{{ m.model_info | tojson }}' data-sources='{{ (m.source_videos or []) | tojson }}'>Models</button>
                                             {% endif %}
-                                            <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ current_chunk }}" title="Play in stream">&#9654; in stream</button>
+                                            <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ current_chunk }}" title="Push to stream">Push to stream</button>
                                             <span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>
                                         </div>
                                         <div class="now-playing-progress mt-1.5 {% if not (initial_stream_status.current_chunk_started_at and initial_stream_status.current_chunk_duration) %}hidden{% endif %}">
@@ -165,7 +168,7 @@ Created: {{ m.created_at }}</div>
                                             {% if show_model_column | default(false) and chunk.model_info %}
                                             <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ chunk.name }}" data-models='{{ chunk.model_info | tojson }}' data-sources='{{ (chunk.source_videos or []) | tojson }}'>Models</button>
                                             {% endif %}
-                                            <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ chunk.name }}" title="Play in stream">&#9654; in stream</button>
+                                            <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ chunk.name }}" title="Push to stream">Push to stream</button>
                                         </div>
                                     </td>
                                     <td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">~{{ chunk.days_to_expire or '?' }} days</td>
@@ -245,7 +248,7 @@ Created: {{ chunk.created_at }}</div>
                                         <div class="audio-progress mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div>
                                     </td>
                                     <td class="py-3 px-6 text-sm text-gray-400 text-right">{% if af_now %}{{ af_now.size_mb }} MB{% else %}—{% endif %}</td>
-                                    <td class="py-3 px-6 text-sm">{% if af_now %}<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="{{ af_now.path }}" title="Delete from filesystem">Delete</button>{% endif %}</td>
+                                    <td class="py-3 px-6 text-sm">{% if af_now %}<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="{{ af_now.path }}" title="Delete from filesystem (will skip to next track if playing)">Delete</button>{% endif %}</td>
                                 </tr>
                                 {% endif %}
                                 {% for af in audio_files if af.name != current_audio %}
@@ -427,7 +430,7 @@ Created: {{ chunk.created_at }}</div>
                 var expiresCell = '~' + (chunk.days_to_expire != null ? chunk.days_to_expire : '?') + ' days';
                 var sourcesBtn = (chunk.source_videos && chunk.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunk.name + '" data-sources="' + (JSON.stringify(chunk.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
                 var modelBtn = (showModelColumn && chunk.model_info && chunk.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunk.name + '" data-models="' + (JSON.stringify(chunk.model_info).replace(/"/g, '&quot;')) + '" data-sources="' + (JSON.stringify(chunk.source_videos || []).replace(/"/g, '&quot;')) + '">Models</button>' : '';
-                return '<tr data-page="' + page + '" data-chunk-name="' + chunk.name + '" class="chunk-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunk.name + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunk.name + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunk.name + '" title="Play in stream">&#9654; in stream</button></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td></tr>';
+                return '<tr data-page="' + page + '" data-chunk-name="' + chunk.name + '" class="chunk-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunk.name + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunk.name + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunk.name + '" title="Push to stream">Push to stream</button></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td></tr>';
             }
 
             function getFilteredSortedChunks() {
@@ -552,7 +555,7 @@ Created: {{ chunk.created_at }}</div>
                         var expiresCell = '~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days';
                         var sourcesBtn = (meta && meta.source_videos && meta.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-sources="' + (JSON.stringify(meta.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
                         var modelBtn = (showModelColumn && meta && meta.model_info && meta.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-models="' + (JSON.stringify(meta.model_info).replace(/"/g, '&quot;')) + '" data-sources="' + (JSON.stringify(meta.source_videos || []).replace(/"/g, '&quot;')) + '">Models</button>' : '';
-                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Play in stream">&#9654; in stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td>';
+                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Push to stream">Push to stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td>';
                         if (tbody && tbody.firstChild) tbody.insertBefore(tr, tbody.firstChild); else if (tbody) tbody.appendChild(tr);
                         playingRow = tr;
                     } else {
@@ -570,7 +573,7 @@ Created: {{ chunk.created_at }}</div>
                         var nameCell = playingRow.querySelector('td:first-child');
                         if (nameCell) {
                             var nameDiv = nameCell.querySelector('.flex');
-                            if (nameDiv) nameDiv.innerHTML = '<a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Play in stream">&#9654; in stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>';
+                            if (nameDiv) nameDiv.innerHTML = '<a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Push to stream">Push to stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>';
                             var progDiv = nameCell.querySelector('.now-playing-progress');
                             if (progDiv) progDiv.className = 'now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden');
                         }
@@ -747,7 +750,7 @@ Created: {{ chunk.created_at }}</div>
                     if (playingName && (audioMetadata || []).some(function(a) { return a.name === playingName; })) {
                         var af = (audioMetadata || []).find(function(a) { return a.name === playingName; });
                         var nowPlayingPlay = (af && af.rel_path) ? '<a href="/audio/' + (af.rel_path || '').split('/').map(function(s) { return encodeURIComponent(s); }).join('/') + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a>' : '';
-                        var nowPlayingDelete = (af && af.path) ? '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + (af.path || '').replace(/"/g, '&quot;') + '" title="Delete from filesystem">Delete</button>' : '';
+                        var nowPlayingDelete = (af && af.path) ? '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + (af.path || '').replace(/"/g, '&quot;') + '" title="Delete from filesystem (will skip to next track if playing)">Delete</button>' : '';
                         html += '<tr id="audio-now-playing-row" data-audio-name="' + playingName + '" data-audio-path="' + (af && af.path ? (af.path || '').replace(/"/g, '&quot;') : '') + '" class="audio-row now-playing-audio border-b-2 border-blue-500/50"><td class="py-3 px-6 text-sm">' + nowPlayingPlay + '<span class="audio-name">' + playingName + '</span><span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span><div class="audio-progress mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af && af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td><td class="py-3 px-6 text-sm">' + nowPlayingDelete + '</td></tr>';
                     }
                     if (filtered.length === 0 && !html) {
@@ -829,8 +832,15 @@ Created: {{ chunk.created_at }}</div>
                     fetch('/api/delete_audio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: path }) })
                         .then(function(r) { return r.json(); })
                         .then(function(data) {
-                            if (data.success) location.reload();
-                            else showToast('Delete failed: ' + (data.error || 'Unknown error'), 6000);
+                            if (data.success) {
+                                showToast('Deleted. Refreshing…');
+                                setTimeout(function() {
+                                    location.reload();
+                                    window.dispatchEvent(new CustomEvent('refresh-stream-status'));
+                                }, 500);
+                            } else {
+                                showToast('Delete failed: ' + (data.error || 'Unknown error'), 6000);
+                            }
                         })
                         .catch(function() { showToast('Delete failed.', 6000); });
                     return;
