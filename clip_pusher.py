@@ -15,6 +15,7 @@ from typing import List, Optional
 STREAM_STATS_FILENAME = ".stream_stats.json"
 CHUNKS_CREATED_FILENAME = ".chunks_created_total"
 PLAY_COUNTS_FILENAME = ".play_counts.json"
+AUDIO_QUEUE_FILENAME = ".audio_queue.txt"
 
 # ── Output normalization ──────────────────────────────────────────
 OUTPUT_AUDIO_RATE    = 44100
@@ -63,6 +64,7 @@ class ClipPusher:
         self._streamer_process: Optional[subprocess.Popen] = None
         self._play_chunk_next: Optional[str] = None
         self._play_chunk_lock = threading.Lock()
+        self._audio_queue: List[str] = []
 
         self._load_stream_stats()
 
@@ -182,10 +184,12 @@ class ClipPusher:
                     meta = json.load(f)
                 raw_sources = meta.get('source_videos') or []
                 model_to_video = {}
+                model_to_thumbnail = {}
                 fallback_vid = None
                 for item in raw_sources:
                     path = item.get('path') if isinstance(item, dict) else (item if isinstance(item, str) else None)
                     model = item.get('model') if isinstance(item, dict) else None
+                    thumb = item.get('thumbnail_url') if isinstance(item, dict) else None
                     if path:
                         vid = self._extract_video_id(path)
                         if vid:
@@ -193,18 +197,23 @@ class ClipPusher:
                                 fallback_vid = vid
                             if model and model not in model_to_video:
                                 model_to_video[model] = vid
+                            if model and model not in model_to_thumbnail:
+                                model_to_thumbnail[model] = thumb or f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
                 for m in (meta.get('model_info') or []):
                     if m:
                         vid = model_to_video.get(m) or fallback_vid
+                        thumb = model_to_thumbnail.get(m)
                         entry = models.get(m)
                         if isinstance(entry, dict):
                             entry['count'] = entry.get('count', 0) + 1
                             if vid:
                                 entry['video_id'] = vid
+                            if thumb:
+                                entry['thumbnail_url'] = thumb
                         elif isinstance(entry, (int, float)):
-                            models[m] = {'count': entry + 1, 'video_id': vid} if vid else entry + 1
+                            models[m] = {'count': entry + 1, 'video_id': vid, 'thumbnail_url': thumb} if (vid or thumb) else entry + 1
                         else:
-                            models[m] = {'count': 1, 'video_id': vid} if vid else 1
+                            models[m] = {'count': 1, 'video_id': vid, 'thumbnail_url': thumb} if (vid or thumb) else 1
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -224,7 +233,8 @@ class ClipPusher:
         for url, entry in models.items():
             count = entry.get('count', entry) if isinstance(entry, dict) else entry
             video_id = entry.get('video_id') if isinstance(entry, dict) else None
-            top_models.append((url, count, video_id))
+            thumbnail_url = entry.get('thumbnail_url') if isinstance(entry, dict) else None
+            top_models.append((url, count, video_id, thumbnail_url))
         top_models.sort(key=lambda x: -x[1])
         top_models = top_models[:20]
         top_audio = sorted(audio.items(), key=lambda x: -x[1])[:20]
@@ -314,8 +324,54 @@ class ClipPusher:
 
     # ── Internal ──────────────────────────────────────────────────
 
+    def _audio_queue_path(self) -> str:
+        return os.path.join(self._stats_dir, AUDIO_QUEUE_FILENAME)
+
+    def _load_audio_queue(self) -> List[str]:
+        path = self._audio_queue_path()
+        if os.path.isfile(path):
+            try:
+                with open(path, 'r') as f:
+                    lines = [l.strip() for l in f if l.strip()]
+                valid = [p for p in lines if os.path.isfile(p)]
+                if valid:
+                    return valid
+            except OSError:
+                pass
+        return []
+
+    def _save_audio_queue(self, queue: List[str]) -> None:
+        path = self._audio_queue_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.write('\n'.join(queue))
+        except OSError:
+            pass
+
+    def _get_next_audio(self) -> Optional[str]:
+        """Get next audio from LRU queue (take from head, move to tail). Ensures fair rotation."""
+        if not self._audio_files:
+            return None
+        if not self._audio_queue:
+            self._audio_queue = self._load_audio_queue()
+        valid = [p for p in self._audio_queue if os.path.isfile(p)]
+        new_files = [p for p in self._audio_files if p not in valid]
+        if not valid or new_files:
+            valid = list(valid) + new_files
+            random.shuffle(valid)
+        if not valid:
+            valid = list(self._audio_files)
+            random.shuffle(valid)
+        audio = valid.pop(0)
+        valid.append(audio)
+        self._audio_queue = valid
+        self._save_audio_queue(valid)
+        self._current_audio = os.path.basename(audio)
+        return audio
+
     def _get_audio_file(self) -> Optional[str]:
-        """Get a random audio file for background music."""
+        """Get a random audio file (used by skip_to_next_audio)."""
         if not self._audio_files:
             return None
         audio = random.choice(self._audio_files)
@@ -442,10 +498,10 @@ class ClipPusher:
                         chunks.remove(full)
                         chunks.insert(0, full)
 
-            # Pick one audio track for the whole round; get duration so we can resume position across chunks
+            # Pick one audio track for the whole round (LRU queue for fair rotation when switching)
             if self._audio_files:
                 if self._persistent_audio_path is None or not os.path.isfile(self._persistent_audio_path):
-                    self._persistent_audio_path = self._get_audio_file()
+                    self._persistent_audio_path = self._get_next_audio()
                     self._current_audio = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
                     self._audio_position = 0.0
                     if self._persistent_audio_path:
@@ -456,14 +512,13 @@ class ClipPusher:
                             )
                             self._persistent_audio_duration = float(out.decode('utf-8').strip())
                         except Exception as e:
-                            # If we can't get duration, position would never advance (always 0). Use fallback.
                             self._persistent_audio_duration = 3600.0
                             print(f"Warning: ffprobe duration failed for {self._persistent_audio_path}: {e}. Using 3600s fallback.")
 
             for chunk in chunks:
                 if not self._running:
                     break
-                
+
                 self._current_chunk = os.path.basename(chunk)
                 self._current_chunk_started_at = time.time()
                 self._current_chunk_duration = None  # set in _stream_chunk after ffprobe

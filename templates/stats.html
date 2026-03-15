@@ -44,15 +44,18 @@
             </div>
 
             <!-- Top models by play count -->
-            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6 overflow-visible">
                 <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Models (top played)</h3>
                 {% if play_counts.models %}
-                <ul class="space-y-3 text-sm text-gray-300">
+                <ul class="space-y-3 text-sm text-gray-300 overflow-visible">
                     {% for m in play_counts.models %}
                     <li class="flex items-center justify-between gap-3 border-b border-gray-700 pb-3 last:border-0">
-                        <a href="{{ m.url }}" target="_blank" rel="noopener" class="flex items-center gap-3 min-w-0 flex-1 group">
+                        <a href="{{ m.url }}" target="_blank" rel="noopener" class="relative flex items-center gap-3 min-w-0 flex-1 group">
                             {% if m.image %}
-                            <img src="{{ m.image }}" alt="" class="w-20 h-[45px] rounded object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer">
+                            <img src="{{ m.image }}" alt="" class="w-40 h-40 rounded-full object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer">
+                            <span class="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50">
+                                <img src="{{ m.image }}" alt="" class="w-64 h-64 rounded-lg object-cover shadow-xl border border-gray-600" referrerpolicy="no-referrer">
+                            </span>
                             {% endif %}
                             <span class="text-indigo-400 group-hover:text-indigo-300 truncate" title="{{ m.url }}">{{ m.title }}</span>
                         </a>

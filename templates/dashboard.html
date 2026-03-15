@@ -34,7 +34,7 @@
     <!-- Sources/Models modal (Alpine) -->
     <div x-data="modal()" x-cloak
          @open-sources.window="show($event.detail.chunk, $event.detail.sources, 'sources', $event.detail.tubearchivist_url)"
-         @open-models.window="show($event.detail.chunk, $event.detail.models, 'models')"
+         @open-models.window="show($event.detail.chunk, $event.detail.models, 'models', null, $event.detail.sources)"
          x-show="isOpen"
          x-transition
          @keydown.escape.window="isOpen = false"
@@ -45,7 +45,7 @@
                 <h3 x-text="title" class="text-lg font-semibold text-white"></h3>
                 <button type="button" @click="isOpen = false" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
-            <div class="p-6 overflow-y-auto font-mono text-sm text-gray-300 space-y-2" x-html="body"></div>
+            <div class="p-6 overflow-y-auto overflow-x-visible font-mono text-sm text-gray-300 space-y-2" x-html="body"></div>
         </div>
     </div>
     <div class="max-w-6xl mx-auto px-4 py-8">
@@ -128,7 +128,7 @@
                                             <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-sources='{{ m.source_videos | tojson }}'>Sources</button>
                                             {% endif %}
                                             {% if show_model_column | default(false) and m.model_info %}
-                                            <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-models='{{ m.model_info | tojson }}'>Models</button>
+                                            <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-models='{{ m.model_info | tojson }}' data-sources='{{ (m.source_videos or []) | tojson }}'>Models</button>
                                             {% endif %}
                                             <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ current_chunk }}" title="Play in stream">&#9654; in stream</button>
                                             <span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>
@@ -163,7 +163,7 @@ Created: {{ m.created_at }}</div>
                                             <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ chunk.name }}" data-sources='{{ chunk.source_videos | tojson }}'>Sources</button>
                                             {% endif %}
                                             {% if show_model_column | default(false) and chunk.model_info %}
-                                            <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ chunk.name }}" data-models='{{ chunk.model_info | tojson }}'>Models</button>
+                                            <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ chunk.name }}" data-models='{{ chunk.model_info | tojson }}' data-sources='{{ (chunk.source_videos or []) | tojson }}'>Models</button>
                                             {% endif %}
                                             <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ chunk.name }}" title="Play in stream">&#9654; in stream</button>
                                         </div>
@@ -338,7 +338,7 @@ Created: {{ chunk.created_at }}</div>
                 isOpen: false,
                 title: '',
                 body: '',
-                show(chunk, items, type, taUrl) {
+                show(chunk, items, type, taUrl, sources) {
                     this.title = type === 'sources' ? 'Source files: ' + (chunk || '') : 'Models: ' + (chunk || '');
                     if (type === 'sources') {
                         var list = items || [];
@@ -367,9 +367,31 @@ Created: {{ chunk.created_at }}</div>
                             return '<div class="py-2 border-b border-gray-700 last:border-0 flex items-start gap-3"><div class="flex-1 min-w-0 break-all select-text">' + linkHtml + modelHtml + '</div>' + thumbBlock + '</div>';
                         }).join('') || '<p class="text-gray-500">No source files.</p>';
                     } else {
+                        var srcList = sources || [];
+                        var modelToThumb = {};
+                        srcList.forEach(function(s) {
+                            var mod = typeof s === 'object' && s && s.model;
+                            var thumb = typeof s === 'object' && s && s.thumbnail_url;
+                            var path = typeof s === 'object' && s && s.path;
+                            if (!mod) return;
+                            if (modelToThumb[mod]) return;
+                            if (thumb) { modelToThumb[mod] = thumb; return; }
+                            if (path) {
+                                var stem = path.replace(/^.*\//, '').replace(/\.(mp4|mkv|avi)$/i, '');
+                                if (stem.length === 11 && /^[a-zA-Z0-9_-]+$/.test(stem)) {
+                                    modelToThumb[mod] = 'https://img.youtube.com/vi/' + stem + '/hqdefault.jpg';
+                                }
+                            }
+                        });
                         this.body = (items || []).map(m => {
                             const href = (m.indexOf('http') === 0 ? m : 'https://' + m);
-                            return '<div class="py-1 border-b border-gray-700 last:border-0"><a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 break-all">' + (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</a></div>';
+                            var thumbSrc = modelToThumb[m];
+                            var escaped = (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                            var linkContent = '<a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 break-all">' + escaped + '</a>';
+                            if (thumbSrc) {
+                                return '<div class="py-2 border-b border-gray-700 last:border-0 flex items-center gap-3"><a href="' + href + '" target="_blank" rel="noopener" class="relative flex items-center gap-3 min-w-0 flex-1 group"><img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-12 h-12 rounded-full object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer"><span class="absolute left-full ml-2 top-0 hidden group-hover:block z-[100]"><img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-64 h-64 rounded-lg object-cover shadow-xl border border-gray-600" referrerpolicy="no-referrer"></span><span class="text-indigo-400 group-hover:text-indigo-300 truncate">' + escaped + '</span></a></div>';
+                            }
+                            return '<div class="py-1 border-b border-gray-700 last:border-0">' + linkContent + '</div>';
                         }).join('') || '<p class="text-gray-500">No models.</p>';
                     }
                     this.isOpen = true;
@@ -404,7 +426,7 @@ Created: {{ chunk.created_at }}</div>
                 var metaCell = '<div class="relative group"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span><div class="hidden group-hover:block absolute right-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div>';
                 var expiresCell = '~' + (chunk.days_to_expire != null ? chunk.days_to_expire : '?') + ' days';
                 var sourcesBtn = (chunk.source_videos && chunk.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunk.name + '" data-sources="' + (JSON.stringify(chunk.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
-                var modelBtn = (showModelColumn && chunk.model_info && chunk.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunk.name + '" data-models="' + (JSON.stringify(chunk.model_info).replace(/"/g, '&quot;')) + '">Models</button>' : '';
+                var modelBtn = (showModelColumn && chunk.model_info && chunk.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunk.name + '" data-models="' + (JSON.stringify(chunk.model_info).replace(/"/g, '&quot;')) + '" data-sources="' + (JSON.stringify(chunk.source_videos || []).replace(/"/g, '&quot;')) + '">Models</button>' : '';
                 return '<tr data-page="' + page + '" data-chunk-name="' + chunk.name + '" class="chunk-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunk.name + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunk.name + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunk.name + '" title="Play in stream">&#9654; in stream</button></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td></tr>';
             }
 
@@ -529,7 +551,7 @@ Created: {{ chunk.created_at }}</div>
                         var metaCell = '<div class="relative group"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span><div class="hidden group-hover:block absolute right-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + metaContent + '</div></div>';
                         var expiresCell = '~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days';
                         var sourcesBtn = (meta && meta.source_videos && meta.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-sources="' + (JSON.stringify(meta.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
-                        var modelBtn = (showModelColumn && meta && meta.model_info && meta.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-models="' + (JSON.stringify(meta.model_info).replace(/"/g, '&quot;')) + '">Models</button>' : '';
+                        var modelBtn = (showModelColumn && meta && meta.model_info && meta.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-models="' + (JSON.stringify(meta.model_info).replace(/"/g, '&quot;')) + '" data-sources="' + (JSON.stringify(meta.source_videos || []).replace(/"/g, '&quot;')) + '">Models</button>' : '';
                         tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Play in stream">&#9654; in stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td>';
                         if (tbody && tbody.firstChild) tbody.insertBefore(tr, tbody.firstChild); else if (tbody) tbody.appendChild(tr);
                         playingRow = tr;
@@ -544,7 +566,7 @@ Created: {{ chunk.created_at }}</div>
                         var metaCell = '<div class="relative group"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-600/80 text-gray-400 text-[10px] font-bold cursor-help" title="Info">i</span><div class="hidden group-hover:block absolute right-0 top-full mt-0.5 z-50 min-w-[280px] max-w-[400px] max-h-64 overflow-auto bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-3 text-left select-text cursor-text whitespace-pre-line text-xs text-gray-200 font-mono" role="tooltip">' + buildMetadataContent(meta) + '</div></div>';
                         var expiresCell = '~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days';
                         var sourcesBtn = (meta && meta.source_videos && meta.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-sources="' + (JSON.stringify(meta.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
-                        var modelBtn = (showModelColumn && meta && meta.model_info && meta.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-models="' + (JSON.stringify(meta.model_info).replace(/"/g, '&quot;')) + '">Models</button>' : '';
+                        var modelBtn = (showModelColumn && meta && meta.model_info && meta.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-models="' + (JSON.stringify(meta.model_info).replace(/"/g, '&quot;')) + '" data-sources="' + (JSON.stringify(meta.source_videos || []).replace(/"/g, '&quot;')) + '">Models</button>' : '';
                         var nameCell = playingRow.querySelector('td:first-child');
                         if (nameCell) {
                             var nameDiv = nameCell.querySelector('.flex');
@@ -828,9 +850,11 @@ Created: {{ chunk.created_at }}</div>
                     e.preventDefault();
                     var chunk = modelBtn.getAttribute('data-chunk') || '';
                     var raw = modelBtn.getAttribute('data-models') || '[]';
-                    var models = [];
+                    var rawSrc = modelBtn.getAttribute('data-sources') || '[]';
+                    var models = [], sources = [];
                     try { models = JSON.parse(raw.replace(/&quot;/g, '"')); } catch (_) {}
-                    window.dispatchEvent(new CustomEvent('open-models', { detail: { chunk: chunk, models: models } }));
+                    try { sources = JSON.parse(rawSrc.replace(/&quot;/g, '"')); } catch (_) {}
+                    window.dispatchEvent(new CustomEvent('open-models', { detail: { chunk: chunk, models: models, sources: sources } }));
                 }
             });
         })();
