@@ -15,6 +15,7 @@ import sys
 import urllib.request
 from flask import Flask, jsonify, request, Response, render_template, send_file
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 
 from clip_pusher import ClipPusher
@@ -23,6 +24,7 @@ from clip_pusher import ClipPusher
 load_dotenv()
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 CORS(app)
 
 # Configuration
@@ -287,7 +289,8 @@ def index():
     chunks_excluding_current = [c for c in chunks if c['name'] != current_chunk]
     show_model_column = bool((settings.get('TUBEARCHIVIST_URL') or '').strip() and (settings.get('TUBEARCHIVIST_TOKEN') or '').strip())
     tubearchivist_url = (settings.get('TUBEARCHIVIST_URL') or '').strip().rstrip('/')
-    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, show_model_column=show_model_column, tubearchivist_url=tubearchivist_url, hls_port=HLS_PORT, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
+    hls_url = _stream_url()
+    return render_template('dashboard.html', chunks=chunks, chunks_excluding_current=chunks_excluding_current, current_chunk_data=current_chunk_data, audio_files=audio_files, settings=settings, show_model_column=show_model_column, tubearchivist_url=tubearchivist_url, hls_port=HLS_PORT, hls_url=hls_url, sys_info=sys_info, current_chunk=current_chunk, current_audio=current_audio, initial_stream_status=initial_stream_status, stream_stats=stream_stats, initial_chunks_limit=INITIAL_CHUNKS_LIMIT)
 
 
 def _admin_context():
@@ -473,11 +476,17 @@ def stats():
     return render_template('stats.html', **ctx)
 
 
+def _stream_url():
+    """Build HLS stream URL (respects X-Forwarded-Proto when behind HTTPS proxy)."""
+    if request.scheme == 'https':
+        return f"https://{request.host}/hls/stream.m3u8"
+    return f"http://{request.host.split(':')[0]}:{HLS_PORT}/hls/stream.m3u8"
+
+
 @app.route('/iptv.m3u')
 def iptv_playlist():
     """IPTV playlist for TV apps - points to nginx-rtmp HLS stream"""
-    base_url = request.host.split(':')[0]
-    hls_url = f"http://{base_url}:{HLS_PORT}/hls/stream.m3u8"
+    hls_url = _stream_url()
 
     playlist_content = f"""#EXTM3U
 #EXTINF:-1,Random Video Clips
@@ -503,7 +512,7 @@ def status():
     status_data = {
         'server': 'running',
         'mode': 'RTMP push (chunked stream)',
-        'stream_url': f'http://{request.host.split(":")[0]}:{HLS_PORT}/hls/stream.m3u8',
+        'stream_url': _stream_url(),
         'rtmp_pusher': pusher_status,
         'generation_in_progress': generation_in_progress,
         'config': {
@@ -790,7 +799,8 @@ def play_chunk():
 
 @app.route('/api/delete_audio', methods=['POST'])
 def delete_audio():
-    """Delete an audio file from the filesystem. Requires path within AUDIO_FOLDER."""
+    """Delete an audio file from the filesystem. Requires path within AUDIO_FOLDER.
+    If the file is currently playing, skips to next track first."""
     if not AUDIO_FOLDER:
         return jsonify({'success': False, 'error': 'AUDIO_FOLDER not configured'}), 400
     data = request.get_json()
@@ -803,6 +813,10 @@ def delete_audio():
         return jsonify({'success': False, 'error': 'Path must be within AUDIO_FOLDER'}), 400
     if not os.path.isfile(abs_path):
         return jsonify({'success': False, 'error': 'File not found'}), 404
+    # If this is the current playing audio, skip to next first
+    current_path = clip_pusher._persistent_audio_path
+    if current_path and os.path.abspath(current_path) == abs_path:
+        clip_pusher.skip_to_next_audio()
     try:
         os.remove(abs_path)
         return jsonify({'success': True})

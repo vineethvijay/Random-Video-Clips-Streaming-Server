@@ -16,32 +16,45 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Bump version from commits
+      - name: Bump version from PR title
         id: version
         run: |
-          # Conventional commits: feat! = major, feat = minor, fix = patch
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            COMMITS=$(git log --format=%s 2>/dev/null)
-          else
-            COMMITS=$(git log $BEFORE..$AFTER --format=%s 2>/dev/null || git log -1 --format=%s)
+          # Use PR title for conventional commit bump (feat! = major, feat = minor, fix = patch)
+          PR_NUM=$(git log -1 --format=%B "${{ github.sha }}" | grep -oE 'Merge pull request #[0-9]+' | grep -oE '[0-9]+' | head -1)
+          TITLE=""
+          if [ -n "$PR_NUM" ]; then
+            TITLE=$(gh pr view "$PR_NUM" --repo "${{ github.repository }}" --json title -q .title 2>/dev/null || true)
+          fi
+          if [ -z "$TITLE" ]; then
+            # Fallback: use commit subjects from the push
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              TITLE=$(git log -1 --format=%s 2>/dev/null)
+            else
+              TITLE=$(git log $BEFORE..$AFTER --format=%s 2>/dev/null | head -5)
+            fi
           fi
 
           BUMP="patch"
-          echo "$COMMITS" | grep -qE '^feat!|^feat\([^)]*\)!' && BUMP="major"
+          echo "$TITLE" | grep -qE '^feat!|^feat\([^)]*\)!' && BUMP="major"
           if [ "$BUMP" != "major" ]; then
-            echo "$COMMITS" | grep -qE '^feat(\([^)]*\))?:?' && BUMP="minor"
+            echo "$TITLE" | grep -qE '^feat(\([^)]*\))?:?' && BUMP="minor"
           fi
           if [ "$BUMP" != "major" ] && [ "$BUMP" != "minor" ]; then
-            echo "$COMMITS" | grep -qE '^fix(\([^)]*\))?:?' && BUMP="patch"
+            echo "$TITLE" | grep -qE '^fix(\([^)]*\))?:?' && BUMP="patch"
           fi
 
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          [[ "$LATEST" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]] || LATEST="v0.0.0"
-          MAJOR=${BASH_REMATCH[1]:-0}
-          MINOR=${BASH_REMATCH[2]:-0}
-          PATCH=${BASH_REMATCH[3]:-0}
+          # Use sort -V to get highest semantic version tag (more reliable than git describe in CI)
+          LATEST=$(git tag -l 'v*' 2>/dev/null | sort -V | tail -1)
+          if [ -z "$LATEST" ] || ! [[ "$LATEST" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            LATEST="v0.0.0"
+            MAJOR=0 MINOR=0 PATCH=0
+          else
+            MAJOR=${BASH_REMATCH[1]}
+            MINOR=${BASH_REMATCH[2]}
+            PATCH=${BASH_REMATCH[3]}
+          fi
 
           case "$BUMP" in
             major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
@@ -57,12 +70,13 @@ jobs:
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "bump=$BUMP" >> $GITHUB_OUTPUT
-          echo "Bumped to $VERSION ($BUMP)"
+          echo "Bumped to $VERSION ($BUMP) from $LATEST"
 
       - name: Write release body
         run: |
-          # Try to get PR body from merged PR (commit message may contain "Merge pull request #N")
-          PR_NUM=$(git log -1 --format=%B "${{ github.sha }}" | grep -oE 'Merge pull request #[0-9]+' | grep -oE '[0-9]+' | head -1)
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          PR_NUM=$(git log -1 --format=%B "$AFTER" | grep -oE 'Merge pull request #[0-9]+' | grep -oE '[0-9]+' | head -1)
           if [ -n "$PR_NUM" ]; then
             BODY=$(gh pr view "$PR_NUM" --repo "${{ github.repository }}" --json body -q .body 2>/dev/null || true)
           fi
