@@ -127,6 +127,7 @@
                                         <div class="flex items-center gap-2 flex-wrap">
                                             <a href="/chunks/{{ current_chunk }}" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a>
                                             <span class="chunk-name">{{ current_chunk }}</span>
+                                            <span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>
                                             {% if m.source_videos %}
                                             <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-sources='{{ m.source_videos | tojson }}'>Sources</button>
                                             {% endif %}
@@ -134,7 +135,6 @@
                                             <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="{{ current_chunk }}" data-models='{{ m.model_info | tojson }}' data-sources='{{ (m.source_videos or []) | tojson }}'>Models</button>
                                             {% endif %}
                                             <button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="{{ current_chunk }}" title="Push to stream">Push to stream</button>
-                                            <span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>
                                         </div>
                                         <div class="now-playing-progress mt-1.5 {% if not (initial_stream_status.current_chunk_started_at and initial_stream_status.current_chunk_duration) %}hidden{% endif %}">
                                             <div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs">
@@ -203,7 +203,7 @@ Created: {{ chunk.created_at }}</div>
                             </div>
 
                 <!-- Audio files (below chunks) -->
-                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6" x-data="{ search: '', sort: 'name-asc' }">
+                <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden mt-6" x-data="{ search: '', sort: 'duration-desc', durationMin: '', durationMax: '' }">
                     <div class="px-6 py-4 border-b border-gray-700 bg-gray-800 flex flex-col gap-3">
                         <div class="flex items-center gap-2">
                             <h2 class="text-xl font-semibold text-white shrink-0">Audio Files</h2>
@@ -218,10 +218,16 @@ Created: {{ chunk.created_at }}</div>
                         <div class="flex flex-wrap items-center gap-2 justify-center">
                             <input type="text" id="audio-search" placeholder="Filter by filename…" x-model="search" @input="window._applyAudioFilter?.()" @keydown.escape="search = ''; window._applyAudioFilter?.()"
                                    class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 max-w-full">
+                            <input type="text" id="audio-duration-min" placeholder="Min duration (e.g. 2:30)" x-model="durationMin" @input="window._applyAudioFilter?.()" @keydown.escape="durationMin = ''; window._applyAudioFilter?.()"
+                                   class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-36 max-w-full">
+                            <input type="text" id="audio-duration-max" placeholder="Max duration (e.g. 5:00)" x-model="durationMax" @input="window._applyAudioFilter?.()" @keydown.escape="durationMax = ''; window._applyAudioFilter?.()"
+                                   class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-36 max-w-full">
                             <select id="audio-sort" x-model="sort" @change="window._applyAudioFilter?.()"
                                     class="px-3 py-1.5 rounded bg-gray-700 border border-gray-600 text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
                                 <option value="name-asc">Name (A–Z)</option>
                                 <option value="name-desc">Name (Z–A)</option>
+                                <option value="duration-asc">Duration (shortest first)</option>
+                                <option value="duration-desc">Duration (longest first)</option>
                                 <option value="size-desc">Size (largest first)</option>
                                 <option value="size-asc">Size (smallest first)</option>
                             </select>
@@ -238,22 +244,9 @@ Created: {{ chunk.created_at }}</div>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-700" id="audio-tbody">
-                                {% if current_audio %}
-                                {% set af_now = audio_files|selectattr('name', 'equalto', current_audio)|first %}
-                                <tr id="audio-now-playing-row" data-audio-name="{{ current_audio }}" data-audio-path="{{ af_now.path if af_now else '' }}" class="audio-row now-playing-audio border-b-2 border-blue-500/50">
-                                    <td class="py-3 px-6 text-sm">
-                                        {% if af_now %}<a href="/audio/{{ af_now.rel_path | urlencode }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a>{% endif %}
-                                        <span class="audio-name">{{ current_audio }}</span>
-                                        <span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span>
-                                        <div class="audio-progress mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div>
-                                    </td>
-                                    <td class="py-3 px-6 text-sm text-gray-400 text-right">{% if af_now %}{{ af_now.size_mb }} MB{% else %}—{% endif %}</td>
-                                    <td class="py-3 px-6 text-sm">{% if af_now %}<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="{{ af_now.path }}" title="Delete from filesystem (will skip to next track if playing)">Delete</button>{% endif %}</td>
-                                </tr>
-                                {% endif %}
                                 {% for af in audio_files if af.name != current_audio %}
                                 <tr data-audio-page="{{ ((loop.index0) // 4) + 1 }}" data-audio-name="{{ af.name }}" data-audio-path="{{ af.path }}" class="audio-row transition duration-150 hover:bg-gray-700/50">
-                                    <td class="py-3 px-6 text-sm text-gray-300"><a href="/audio/{{ af.rel_path | urlencode }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a><span class="audio-name">{{ af.name }}</span></td>
+                                    <td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap"><a href="/audio/{{ af.rel_path | urlencode }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a><span class="audio-name">{{ af.name }}</span>{% if af.duration_display %}<span class="audio-duration text-gray-500 text-xs font-medium ml-1">{{ af.duration_display }}</span>{% endif %}<button type="button" class="btn-play-audio ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-audio-name="{{ af.name }}" title="Push to stream">Push to stream</button></div></td>
                                     <td class="py-3 px-6 text-sm text-gray-400 text-right">{{ af.size_mb }} MB</td>
                                     <td class="py-3 px-6 text-sm"><button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="{{ af.path }}" title="Delete from filesystem">Delete</button></td>
                                 </tr>
@@ -264,6 +257,23 @@ Created: {{ chunk.created_at }}</div>
                                 </tr>
                                 {% endif %}
                                 {% endfor %}
+                                {% if current_audio %}
+                                {% set af_now = audio_files|selectattr('name', 'equalto', current_audio)|first %}
+                                <tr id="audio-now-playing-row" data-audio-name="{{ current_audio }}" data-audio-path="{{ af_now.path if af_now else '' }}" class="audio-row now-playing-audio border-t-2 border-blue-500/50">
+                                    <td class="py-3 px-6 text-sm">
+                                        <div class="flex items-center gap-2 flex-wrap">
+                                            {% if af_now %}<a href="/audio/{{ af_now.rel_path | urlencode }}" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0" title="Play in browser">&#9654;</a>{% endif %}
+                                            <span class="audio-name">{{ current_audio }}</span>
+                                            {% if af_now and af_now.duration_display %}<span class="audio-duration text-gray-500 text-xs font-medium ml-1">{{ af_now.duration_display }}</span>{% endif %}
+                                            <span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span>
+                                            <button type="button" class="btn-play-audio ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-audio-name="{{ current_audio }}" title="Push to stream">Push to stream</button>
+                                            <div class="audio-progress w-full mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div>
+                                        </div>
+                                    </td>
+                                    <td class="py-3 px-6 text-sm text-gray-400 text-right">{% if af_now %}{{ af_now.size_mb }} MB{% else %}—{% endif %}</td>
+                                    <td class="py-3 px-6 text-sm">{% if af_now %}<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="{{ af_now.path }}" title="Delete from filesystem (will skip to next track if playing)">Delete</button>{% endif %}</td>
+                                </tr>
+                                {% endif %}
                             </tbody>
                         </table>
                             </div>
@@ -374,11 +384,9 @@ Created: {{ chunk.created_at }}</div>
                         var modelToThumb = {};
                         srcList.forEach(function(s) {
                             var mod = typeof s === 'object' && s && s.model;
-                            var thumb = typeof s === 'object' && s && s.thumbnail_url;
                             var path = typeof s === 'object' && s && s.path;
                             if (!mod) return;
                             if (modelToThumb[mod]) return;
-                            if (thumb) { modelToThumb[mod] = thumb; return; }
                             if (path) {
                                 var stem = path.replace(/^.*\//, '').replace(/\.(mp4|mkv|avi)$/i, '');
                                 if (stem.length === 11 && /^[a-zA-Z0-9_-]+$/.test(stem)) {
@@ -392,7 +400,7 @@ Created: {{ chunk.created_at }}</div>
                             var escaped = (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                             var linkContent = '<a href="' + href + '" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 break-all">' + escaped + '</a>';
                             if (thumbSrc) {
-                                return '<div class="py-2 border-b border-gray-700 last:border-0 flex items-center gap-3"><a href="' + href + '" target="_blank" rel="noopener" class="relative flex items-center gap-3 min-w-0 flex-1 group"><img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-12 h-12 rounded-full object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer"><span class="absolute left-full ml-2 top-0 hidden group-hover:block z-[100]"><img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-64 h-64 rounded-lg object-cover shadow-xl border border-gray-600" referrerpolicy="no-referrer"></span><span class="text-indigo-400 group-hover:text-indigo-300 truncate">' + escaped + '</span></a></div>';
+                                return '<div class="py-2 border-b border-gray-700 last:border-0 flex items-center gap-3"><a href="' + href + '" target="_blank" rel="noopener" class="relative flex items-center gap-3 min-w-0 flex-1 group"><img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-12 h-12 rounded-full object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer"><span class="absolute left-0 bottom-full mb-2 hidden group-hover:block z-[100]"><img src="' + thumbSrc.replace(/"/g, '&quot;') + '" alt="" class="w-64 h-64 rounded-lg object-cover shadow-xl border border-gray-600" referrerpolicy="no-referrer"></span><span class="text-indigo-400 group-hover:text-indigo-300 truncate">' + escaped + '</span></a></div>';
                             }
                             return '<div class="py-1 border-b border-gray-700 last:border-0">' + linkContent + '</div>';
                         }).join('') || '<p class="text-gray-500">No models.</p>';
@@ -555,7 +563,7 @@ Created: {{ chunk.created_at }}</div>
                         var expiresCell = '~' + (meta && meta.days_to_expire != null ? meta.days_to_expire : '?') + ' days';
                         var sourcesBtn = (meta && meta.source_videos && meta.source_videos.length) ? ' <button type="button" class="chunk-sources-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-sources="' + (JSON.stringify(meta.source_videos).replace(/"/g, '&quot;')) + '">Sources</button>' : '';
                         var modelBtn = (showModelColumn && meta && meta.model_info && meta.model_info.length) ? ' <button type="button" class="chunk-model-btn text-indigo-400 hover:text-indigo-300 text-xs font-medium" data-chunk="' + chunkName + '" data-models="' + (JSON.stringify(meta.model_info).replace(/"/g, '&quot;')) + '" data-sources="' + (JSON.stringify(meta.source_videos || []).replace(/"/g, '&quot;')) + '">Models</button>' : '';
-                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Push to stream">Push to stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td>';
+                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap"><a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Push to stream">Push to stream</button></div><div class="now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="chunk-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="chunk-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 pl-4 pr-2 text-sm text-gray-400 align-top">' + expiresCell + '</td><td class="py-3 pl-2 pr-6 text-sm text-gray-400 align-top">' + metaCell + '</td>';
                         if (tbody && tbody.firstChild) tbody.insertBefore(tr, tbody.firstChild); else if (tbody) tbody.appendChild(tr);
                         playingRow = tr;
                     } else {
@@ -573,7 +581,7 @@ Created: {{ chunk.created_at }}</div>
                         var nameCell = playingRow.querySelector('td:first-child');
                         if (nameCell) {
                             var nameDiv = nameCell.querySelector('.flex');
-                            if (nameDiv) nameDiv.innerHTML = '<a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Push to stream">Push to stream</button><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>';
+                            if (nameDiv) nameDiv.innerHTML = '<a href="/chunks/' + chunkName + '" target="_blank" class="text-gray-400 hover:text-white shrink-0" title="Play in browser">&#9654;</a><span class="chunk-name">' + chunkName + '</span><span class="ml-2 now-playing-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing &#9654;</span>' + sourcesBtn + modelBtn + '<button type="button" class="btn-play-chunk ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-chunk-name="' + chunkName + '" title="Push to stream">Push to stream</button>';
                             var progDiv = nameCell.querySelector('.now-playing-progress');
                             if (progDiv) progDiv.className = 'now-playing-progress mt-1.5 ' + (startedAt != null && duration != null && duration > 0 ? '' : 'hidden');
                         }
@@ -606,10 +614,25 @@ Created: {{ chunk.created_at }}</div>
                     if (pinnedRow) {
                         pinnedRow.classList.remove('hidden');
                         pinnedRow.setAttribute('data-audio-name', audioName);
+                        if (af && af.path) pinnedRow.setAttribute('data-audio-path', af.path);
                         var nameSpan = pinnedRow.querySelector('.audio-name');
                         if (nameSpan) nameSpan.textContent = audioName;
-                        var sizeTd = pinnedRow.querySelector('td:last-child');
+                        var durSpan = pinnedRow.querySelector('.audio-duration');
+                        if (durSpan) {
+                            durSpan.textContent = (af && af.duration_display) ? af.duration_display : '';
+                            durSpan.style.display = (af && af.duration_display) ? '' : 'none';
+                        } else if (af && af.duration_display && nameSpan) {
+                            var newDur = document.createElement('span');
+                            newDur.className = 'audio-duration text-gray-500 text-xs font-medium ml-1';
+                            newDur.textContent = af.duration_display;
+                            nameSpan.parentNode.insertBefore(newDur, nameSpan.nextSibling);
+                        }
+                        var sizeTd = pinnedRow.querySelector('td:nth-child(2)');
                         if (sizeTd) sizeTd.textContent = sizeMb;
+                        var delTd = pinnedRow.querySelector('td:nth-child(3)');
+                        if (delTd && af && af.path && !delTd.querySelector('.audio-delete-btn')) {
+                            delTd.innerHTML = '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + (af.path || '').replace(/"/g, '&quot;') + '" title="Delete from filesystem (will skip to next track if playing)">Delete</button>';
+                        }
                         if (startedAt != null && duration != null && duration > 0) {
                             pinnedRow.setAttribute('data-chunk-started-at', startedAt);
                             pinnedRow.setAttribute('data-chunk-duration', duration);
@@ -626,9 +649,14 @@ Created: {{ chunk.created_at }}</div>
                         var tr = document.createElement('tr');
                         tr.id = 'audio-now-playing-row';
                         tr.setAttribute('data-audio-name', audioName);
+                        if (af && af.path) tr.setAttribute('data-audio-path', af.path);
                         tr.className = 'audio-row now-playing-audio border-b-2 border-blue-500/50';
                         var showProg = (startedAt != null && duration != null && duration > 0) || (audioPositionSec != null && audioTrackDurationSec != null && audioTrackDurationSec > 0);
-                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><span class="audio-name">' + audioName + '</span><span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span><div class="audio-progress mt-1.5 ' + (showProg ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + sizeMb + '</td>';
+                        var playBtn = (af && af.rel_path) ? '<a href="/audio/' + (af.rel_path || '').split('/').map(function(s) { return encodeURIComponent(s); }).join('/') + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a>' : '';
+                        var pushBtn = '<button type="button" class="btn-play-audio ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-audio-name="' + (audioName || '').replace(/"/g, '&quot;') + '" title="Push to stream">Push to stream</button>';
+                        var delBtn = (af && af.path) ? '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + (af.path || '').replace(/"/g, '&quot;') + '" title="Delete from filesystem (will skip to next track if playing)">Delete</button>' : '';
+                        var durSpan = (af && af.duration_display) ? '<span class="audio-duration text-gray-500 text-xs font-medium ml-1">' + af.duration_display + '</span>' : '';
+                        tr.innerHTML = '<td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap">' + playBtn + '<span class="audio-name">' + audioName + '</span>' + durSpan + '<span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span>' + pushBtn + '<div class="audio-progress w-full mt-1.5 ' + (showProg ? '' : 'hidden') + '"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + sizeMb + '</td><td class="py-3 px-6 text-sm">' + delBtn + '</td>';
                         if (startedAt != null && duration != null && duration > 0) {
                             tr.setAttribute('data-chunk-started-at', startedAt);
                             tr.setAttribute('data-chunk-duration', duration);
@@ -638,7 +666,7 @@ Created: {{ chunk.created_at }}</div>
                             tr.setAttribute('data-audio-duration', String(audioTrackDurationSec));
                             tr.setAttribute('data-audio-position-as-of', String(Date.now() / 1000));
                         }
-                        audioTbody.insertBefore(tr, audioTbody.firstChild);
+                        audioTbody.appendChild(tr);
                     }
                 }
 
@@ -719,22 +747,51 @@ Created: {{ chunk.created_at }}</div>
                     var path = (af.path || '').replace(/"/g, '&quot;');
                     var relPath = (af.rel_path || af.name || '').split('/').map(function(s) { return encodeURIComponent(s); }).join('/');
                     var playBtn = '<a href="/audio/' + relPath + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a>';
+                    var pushBtn = '<button type="button" class="btn-play-audio ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-audio-name="' + (af.name || '').replace(/"/g, '&quot;') + '" title="Push to stream">Push to stream</button>';
                     var deleteBtn = '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + path + '" title="Delete from filesystem">Delete</button>';
-                    return '<tr data-audio-page="' + page + '" data-audio-name="' + af.name + '" data-audio-path="' + path + '" class="audio-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300">' + playBtn + '<span class="audio-name">' + af.name + '</span></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td><td class="py-3 px-6 text-sm">' + deleteBtn + '</td></tr>';
+                    var durSpan = (af && af.duration_display) ? '<span class="audio-duration text-gray-500 text-xs font-medium ml-1">' + af.duration_display + '</span>' : '';
+                    return '<tr data-audio-page="' + page + '" data-audio-name="' + af.name + '" data-audio-path="' + path + '" class="audio-row transition duration-150 hover:bg-gray-700/50"><td class="py-3 px-6 text-sm text-gray-300"><div class="flex items-center gap-2 flex-wrap">' + playBtn + '<span class="audio-name">' + af.name + '</span>' + durSpan + pushBtn + '</div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td><td class="py-3 px-6 text-sm">' + deleteBtn + '</td></tr>';
                 }
 
+                function parseDurationToSec(s) {
+                    if (!s || !(s = String(s).trim())) return null;
+                    var m = s.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+                    if (m) {
+                        var h = m[3] != null ? parseInt(m[1], 10) : 0;
+                        var min = m[3] != null ? parseInt(m[2], 10) : parseInt(m[1], 10);
+                        var sec = m[3] != null ? parseInt(m[3], 10) : parseInt(m[2], 10);
+                        return (h * 3600) + (min * 60) + sec;
+                    }
+                    var n = parseInt(s, 10);
+                    return !isNaN(n) && n >= 0 ? n : null;
+                }
                 function getFilteredSortedAudio() {
                     var searchVal = (document.getElementById('audio-search') || {}).value || '';
-                    var sortVal = (document.getElementById('audio-sort') || {}).value || 'name-asc';
+                    var durationMinVal = (document.getElementById('audio-duration-min') || {}).value || '';
+                    var durationMaxVal = (document.getElementById('audio-duration-max') || {}).value || '';
+                    var sortVal = (document.getElementById('audio-sort') || {}).value || 'duration-desc';
                     var playingName = (document.getElementById('audio-now-playing-row') || {}).getAttribute('data-audio-name') || currentAudioName;
                     var list = (audioMetadata || []).slice();
                     if (searchVal.trim()) {
                         var q = searchVal.toLowerCase().trim();
                         list = list.filter(function(a) { return (a.name || '').toLowerCase().indexOf(q) >= 0; });
                     }
+                    var minSec = parseDurationToSec(durationMinVal);
+                    var maxSec = parseDurationToSec(durationMaxVal);
+                    if (minSec != null || maxSec != null) {
+                        list = list.filter(function(a) {
+                            var d = a.duration_sec;
+                            if (d == null) return false;
+                            if (minSec != null && d < minSec) return false;
+                            if (maxSec != null && d > maxSec) return false;
+                            return true;
+                        });
+                    }
                     if (playingName) list = list.filter(function(a) { return a.name !== playingName; });
                     if (sortVal === 'name-asc') list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
                     else if (sortVal === 'name-desc') list.sort(function(a, b) { return (b.name || '').localeCompare(a.name || ''); });
+                    else if (sortVal === 'duration-asc') list.sort(function(a, b) { return (a.duration_sec || 0) - (b.duration_sec || 0); });
+                    else if (sortVal === 'duration-desc') list.sort(function(a, b) { return (b.duration_sec || 0) - (a.duration_sec || 0); });
                     else if (sortVal === 'size-desc') list.sort(function(a, b) { return (b.size_mb || 0) - (a.size_mb || 0); });
                     else if (sortVal === 'size-asc') list.sort(function(a, b) { return (a.size_mb || 0) - (b.size_mb || 0); });
                     return list;
@@ -747,15 +804,12 @@ Created: {{ chunk.created_at }}</div>
                     audioCurrentPage = Math.min(audioCurrentPage, audioTotal);
 
                     var html = '';
-                    if (playingName && (audioMetadata || []).some(function(a) { return a.name === playingName; })) {
-                        var af = (audioMetadata || []).find(function(a) { return a.name === playingName; });
-                        var nowPlayingPlay = (af && af.rel_path) ? '<a href="/audio/' + (af.rel_path || '').split('/').map(function(s) { return encodeURIComponent(s); }).join('/') + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a>' : '';
-                        var nowPlayingDelete = (af && af.path) ? '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + (af.path || '').replace(/"/g, '&quot;') + '" title="Delete from filesystem (will skip to next track if playing)">Delete</button>' : '';
-                        html += '<tr id="audio-now-playing-row" data-audio-name="' + playingName + '" data-audio-path="' + (af && af.path ? (af.path || '').replace(/"/g, '&quot;') : '') + '" class="audio-row now-playing-audio border-b-2 border-blue-500/50"><td class="py-3 px-6 text-sm">' + nowPlayingPlay + '<span class="audio-name">' + playingName + '</span><span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span><div class="audio-progress mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af && af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td><td class="py-3 px-6 text-sm">' + nowPlayingDelete + '</td></tr>';
-                    }
-                    if (filtered.length === 0 && !html) {
+                    if (filtered.length === 0 && !(playingName && (audioMetadata || []).some(function(a) { return a.name === playingName; }))) {
                         var searchVal = (document.getElementById('audio-search') || {}).value || '';
-                        var msg = searchVal.trim() ? 'No matching audio files.' : 'No audio files found. Set AUDIO_FOLDER in .env to add background music.';
+                        var durMin = (document.getElementById('audio-duration-min') || {}).value || '';
+                        var durMax = (document.getElementById('audio-duration-max') || {}).value || '';
+                        var hasFilter = searchVal.trim() || durMin.trim() || durMax.trim();
+                        var msg = hasFilter ? 'No matching audio files.' : 'No audio files found. Set AUDIO_FOLDER in .env to add background music.';
                         html += '<tr><td colspan="3" class="py-6 text-center text-gray-500">' + msg + '</td></tr>';
                     } else if (filtered.length > 0) {
                         html += filtered.map(function(af, i) {
@@ -763,13 +817,24 @@ Created: {{ chunk.created_at }}</div>
                             return audioRowHtml(af, page);
                         }).join('');
                     }
+                    if (playingName && (audioMetadata || []).some(function(a) { return a.name === playingName; })) {
+                        var af = (audioMetadata || []).find(function(a) { return a.name === playingName; });
+                        var nowPlayingPlay = (af && af.rel_path) ? '<a href="/audio/' + (af.rel_path || '').split('/').map(function(s) { return encodeURIComponent(s); }).join('/') + '" target="_blank" class="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-bold shrink-0 mr-2" title="Play in browser">&#9654;</a>' : '';
+                        var nowPlayingPush = '<button type="button" class="btn-play-audio ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-600 hover:bg-blue-600 text-white text-xs font-medium shrink-0" data-audio-name="' + (playingName || '').replace(/"/g, '&quot;') + '" title="Push to stream">Push to stream</button>';
+                        var nowPlayingDelete = (af && af.path) ? '<button type="button" class="audio-delete-btn text-red-400 hover:text-red-300 text-xs font-medium" data-path="' + (af.path || '').replace(/"/g, '&quot;') + '" title="Delete from filesystem (will skip to next track if playing)">Delete</button>' : '';
+                        var nowPlayingDur = (af && af.duration_display) ? '<span class="audio-duration text-gray-500 text-xs font-medium ml-1">' + af.duration_display + '</span>' : '';
+                        html += '<tr id="audio-now-playing-row" data-audio-name="' + playingName + '" data-audio-path="' + (af && af.path ? (af.path || '').replace(/"/g, '&quot;') : '') + '" class="audio-row now-playing-audio border-t-2 border-blue-500/50"><td class="py-3 px-6 text-sm"><div class="flex items-center gap-2 flex-wrap">' + nowPlayingPlay + '<span class="audio-name">' + playingName + '</span>' + nowPlayingDur + '<span class="ml-2 now-playing-audio-badge inline-block bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Now Playing</span>' + nowPlayingPush + '<div class="audio-progress w-full mt-1.5 hidden"><div class="bg-gray-700 rounded-full h-2 overflow-hidden max-w-xs"><div class="audio-progress-bar bg-blue-500 h-2 rounded-full transition-all duration-1000" style="width:0%"></div></div><span class="audio-progress-label text-xs text-gray-500 mt-0.5">0:00 / 0:00</span></div></div></td><td class="py-3 px-6 text-sm text-gray-400 text-right">' + (af && af.size_mb != null ? af.size_mb + ' MB' : '—') + '</td><td class="py-3 px-6 text-sm">' + nowPlayingDelete + '</td></tr>';
+                    }
                     if (audioTbody) audioTbody.innerHTML = html;
 
                     audioRows = audioTbody ? Array.from(audioTbody.querySelectorAll('tr.audio-row[data-audio-page]')) : [];
                     if (audioCountBadge) {
                         var totalCount = (audioMetadata || []).length;
                         var searchVal = (document.getElementById('audio-search') || {}).value || '';
-                        audioCountBadge.textContent = searchVal.trim() ? filtered.length + ' of ' + totalCount + ' files' : totalCount + ' files';
+                        var durMin = (document.getElementById('audio-duration-min') || {}).value || '';
+                        var durMax = (document.getElementById('audio-duration-max') || {}).value || '';
+                        var hasFilter = searchVal.trim() || durMin.trim() || durMax.trim();
+                        audioCountBadge.textContent = hasFilter ? filtered.length + ' of ' + totalCount + ' files' : totalCount + ' files';
                     }
                     if (audioTotalEl) audioTotalEl.textContent = audioTotal;
                     var paginationDiv = document.getElementById('audio-pagination');
@@ -884,27 +949,52 @@ Created: {{ chunk.created_at }}</div>
 
         document.addEventListener('click', async function(e) {
             var btn = e.target && e.target.closest('.btn-play-chunk');
-            if (!btn) return;
-            var chunkName = btn.getAttribute('data-chunk-name');
-            if (!chunkName) return;
-            var orig = btn.textContent;
-            btn.textContent = '…';
-            btn.disabled = true;
-            try {
-                var res = await fetch('/api/play_chunk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chunk_name: chunkName }) });
-                var data = await res.json();
-                if (data.success) {
-                    showToast('Switched to next video. It may take a few seconds to appear in the live stream.');
-                    setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 2000);
-                    setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 5000);
-                } else {
-                    showToast(data.error || 'Failed to play chunk.');
+            if (btn) {
+                var chunkName = btn.getAttribute('data-chunk-name');
+                if (!chunkName) return;
+                var orig = btn.textContent;
+                btn.textContent = '…';
+                btn.disabled = true;
+                try {
+                    var res = await fetch('/api/play_chunk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chunk_name: chunkName }) });
+                    var data = await res.json();
+                    if (data.success) {
+                        showToast('Switched to next video. It may take a few seconds to appear in the live stream.');
+                        setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 2000);
+                        setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 5000);
+                    } else {
+                        showToast(data.error || 'Failed to play chunk.');
+                    }
+                } catch (err) {
+                    showToast('Request failed.');
                 }
-            } catch (err) {
-                showToast('Request failed.');
+                btn.textContent = orig;
+                btn.disabled = false;
+                return;
             }
-            btn.textContent = orig;
-            btn.disabled = false;
+            var audioBtn = e.target && e.target.closest('.btn-play-audio');
+            if (audioBtn) {
+                var audioName = audioBtn.getAttribute('data-audio-name');
+                if (!audioName) return;
+                var orig = audioBtn.textContent;
+                audioBtn.textContent = '…';
+                audioBtn.disabled = true;
+                try {
+                    var res = await fetch('/api/play_audio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_name: audioName }) });
+                    var data = await res.json();
+                    if (data.success) {
+                        showToast('Switched to audio track. It may take a few seconds to appear in the live stream.');
+                        setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 2000);
+                        setTimeout(function() { window.dispatchEvent(new CustomEvent('refresh-stream-status')); }, 5000);
+                    } else {
+                        showToast(data.error || 'Failed to play audio.');
+                    }
+                } catch (err) {
+                    showToast('Request failed.');
+                }
+                audioBtn.textContent = orig;
+                audioBtn.disabled = false;
+            }
         });
 
         document.getElementById('btn-skip-next').addEventListener('click', async () => {
