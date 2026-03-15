@@ -8,6 +8,7 @@ Pushes pre-generated chunks to RTMP server for continuous live streaming
 import html
 import json
 import os
+import time
 import re
 import signal
 import sys
@@ -382,7 +383,7 @@ def admin():
     return render_template('admin.html', **ctx)
 
 
-def _fetch_og_meta(url: str, timeout: float = 4.0) -> dict:
+def _fetch_og_meta(url: str, timeout: float = 5.0) -> dict:
     """Fetch og:title and og:image from URL. Returns {title, image} or empty dict on failure."""
     if not url or not url.startswith(('http://', 'https://')):
         return {}
@@ -395,26 +396,36 @@ def _fetch_og_meta(url: str, timeout: float = 4.0) -> dict:
                 cache = json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
-    if url in cache:
-        return cache[url]
+    cached = cache.get(url)
+    if cached and isinstance(cached, dict):
+        ts = cached.get('_ts', 0)
+        if ts and (time.time() - ts) < 86400:  # 24h TTL
+            return {k: v for k, v in cached.items() if k != '_ts'}
     result = {}
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; StreamStats/1.0)'})
+        req = urllib.request.Request(
+            url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            html = resp.read().decode('utf-8', errors='replace')
-        m_title = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+            html_content = resp.read().decode('utf-8', errors='replace')
+        m_title = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html_content, re.I)
         if not m_title:
-            m_title = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', html, re.I)
-        m_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+            m_title = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', html_content, re.I)
+        m_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html_content, re.I)
         if not m_image:
-            m_image = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.I)
+            m_image = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html_content, re.I)
         if m_title:
             result['title'] = html.unescape(m_title.group(1).strip())[:120]
         if m_image:
             result['image'] = m_image.group(1).strip()
     except Exception:
         pass
-    cache[url] = result
+    cache[url] = dict(result, _ts=time.time())
     try:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, 'w') as f:
@@ -439,10 +450,12 @@ def _stats_context():
     for item in play_counts.get('models', []):
         model, count = item[0], item[1]
         video_id = item[2] if len(item) > 2 else None
+        stored_thumb = item[3] if len(item) > 3 else None
         url = model if model.startswith('http') else 'https://' + model
         meta = _fetch_og_meta(url)
         title = html.unescape(meta.get('title') or url)
-        thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else meta.get('image')
+        # Prefer YouTube thumbnail from video_id (play_counts) when available; else stored_thumb, else OG image
+        thumbnail = (f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else None) or stored_thumb or meta.get('image')
         models_enriched.append({
             'url': url,
             'count': count,
