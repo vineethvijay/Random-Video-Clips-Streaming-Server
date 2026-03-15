@@ -322,6 +322,36 @@ class ClipPusher:
         self.skip_to_next()
         return True
 
+    def play_audio(self, audio_name: str) -> bool:
+        """Switch to a specific audio track. Stops current stream and restarts with the new track."""
+        if not self._audio_files:
+            return False
+        name = os.path.basename(audio_name)
+        match = next((p for p in self._audio_files if os.path.basename(p) == name), None)
+        if not match or not os.path.isfile(match):
+            return False
+        self._persistent_audio_path = match
+        self._current_audio = os.path.basename(match)
+        self._audio_position = 0.0
+        try:
+            out = subprocess.check_output(
+                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', match]
+            )
+            self._persistent_audio_duration = float(out.decode('utf-8').strip())
+        except Exception:
+            self._persistent_audio_duration = 3600.0
+        if self._streamer_process and self._streamer_process.poll() is None:
+            try:
+                self._streamer_process.terminate()
+                self._streamer_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._streamer_process.kill()
+            except Exception:
+                pass
+            return True
+        return True
+
     # ── Internal ──────────────────────────────────────────────────
 
     def _audio_queue_path(self) -> str:

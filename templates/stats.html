@@ -11,7 +11,7 @@
     <style>body { font-family: 'Inter', sans-serif; } [x-cloak] { display: none !important; }</style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
-    <div class="max-w-2xl mx-auto px-4 py-8">
+    <div class="max-w-6xl mx-auto px-4 py-8">
         <header class="mb-8 flex justify-between items-end border-b border-gray-700 pb-4">
             <div>
                 <h1 class="text-3xl font-bold text-white mb-3">Stream Stats</h1>
@@ -44,15 +44,19 @@
             </div>
 
             <!-- Top models by play count -->
-            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6 overflow-visible">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Models (top played)</h3>
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden" x-data="{ collapsed: true }">
+                <div @click="collapsed = !collapsed" class="px-6 py-4 cursor-pointer hover:bg-gray-700/50 transition-colors flex items-center justify-between">
+                    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Models (top played)</h3>
+                    <span class="text-gray-500" x-text="collapsed ? '▶' : '▼'"></span>
+                </div>
+                <div x-show="!collapsed" x-cloak class="px-6 pb-6 overflow-visible">
                 {% if play_counts.models %}
-                <ul class="space-y-3 text-sm text-gray-300 overflow-visible">
+                <ul class="grid grid-cols-2 gap-3 text-sm text-gray-300 overflow-visible">
                     {% for m in play_counts.models %}
-                    <li class="flex items-center justify-between gap-3 border-b border-gray-700 pb-3 last:border-0">
-                        <a href="{{ m.url }}" target="_blank" rel="noopener" class="relative flex items-center gap-3 min-w-0 flex-1 group">
+                    <li class="flex items-center justify-between gap-2 border-b border-gray-700 pb-3 odd:border-r odd:border-gray-700 odd:pr-3">
+                        <a href="{{ m.url }}" target="_blank" rel="noopener" class="relative flex items-center gap-2 min-w-0 flex-1 group">
                             {% if m.image %}
-                            <img src="{{ m.image }}" alt="" class="w-40 h-40 rounded-full object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer">
+                            <img src="{{ m.image }}" alt="" class="w-12 h-12 rounded-full object-cover shrink-0" loading="lazy" referrerpolicy="no-referrer">
                             <span class="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50">
                                 <img src="{{ m.image }}" alt="" class="w-64 h-64 rounded-lg object-cover shadow-xl border border-gray-600" referrerpolicy="no-referrer">
                             </span>
@@ -66,23 +70,29 @@
                 {% else %}
                 <p class="text-gray-500 text-sm">No model play data yet. Models are tracked when chunks with TubeArchivist metadata are played.</p>
                 {% endif %}
+                </div>
             </div>
 
             <!-- Top audio by play count -->
-            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 p-6">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Music (most played)</h3>
+            <div class="bg-gray-800 rounded-lg shadow border border-gray-700 overflow-hidden" x-data="{ collapsed: true }">
+                <div @click="collapsed = !collapsed" class="px-6 py-4 cursor-pointer hover:bg-gray-700/50 transition-colors flex items-center justify-between">
+                    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Music (most played)</h3>
+                    <span class="text-gray-500" x-text="collapsed ? '▶' : '▼'"></span>
+                </div>
+                <div x-show="!collapsed" x-cloak class="px-6 pb-6">
                 {% if play_counts.audio %}
-                <ul class="space-y-2 text-sm text-gray-300">
+                <ul class="grid grid-cols-2 gap-3 text-sm text-gray-300">
                     {% for name, count in play_counts.audio %}
-                    <li class="flex justify-between items-center border-b border-gray-700 pb-2 last:border-0">
-                        <span class="truncate max-w-[75%]" title="{{ name }}">{{ name }}</span>
-                        <span class="font-mono text-gray-400 shrink-0 ml-2">{{ count }}</span>
+                    <li class="flex justify-between items-center gap-2 border-b border-gray-700 pb-3 odd:border-r odd:border-gray-700 odd:pr-3">
+                        <span class="truncate min-w-0" title="{{ name }}">{{ name }}</span>
+                        <span class="font-mono text-gray-400 shrink-0">{{ count }}</span>
                     </li>
                     {% endfor %}
                 </ul>
                 {% else %}
                 <p class="text-gray-500 text-sm">No audio play data yet. Counts increment per chunk played while each track is active.</p>
                 {% endif %}
+                </div>
             </div>
         </div>
     </div>

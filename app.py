@@ -79,6 +79,113 @@ def _format_time_played(seconds):
     return ' '.join(parts)
 
 
+def _format_duration(seconds):
+    """Format seconds as M:SS (e.g. 245 -> '4:05')."""
+    if seconds is None or seconds < 0:
+        return None
+    s = int(round(seconds))
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f'{h}:{m:02d}:{s:02d}'
+    return f'{m}:{s:02d}'
+
+
+AUDIO_DURATIONS_CACHE_FILENAME = '.audio_durations.json'
+
+
+def _audio_duration_sec(path):
+    """Get audio duration in seconds via ffprobe. Returns None on failure."""
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', path],
+            stderr=subprocess.DEVNULL, timeout=3
+        )
+        return float(out.decode('utf-8').strip())
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
+def _audio_durations_cache_path():
+    """Path to the audio durations cache file (in STATS_DIR)."""
+    cache_dir = STATS_DIR or CHUNK_FOLDER
+    return os.path.join(cache_dir, AUDIO_DURATIONS_CACHE_FILENAME)
+
+
+def _load_audio_durations_cache():
+    """Load cached durations from disk. Returns durations_dict or None. Cache persists as long as filenames stay same."""
+    path = _audio_durations_cache_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        return data.get('durations') or {}
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_audio_durations_cache(durations):
+    """Save durations cache to disk."""
+    path = _audio_durations_cache_path()
+    cache_dir = os.path.dirname(path)
+    if cache_dir and not os.path.isdir(cache_dir):
+        return
+    try:
+        with open(path, 'w') as f:
+            json.dump({'durations': durations, 'updated_at': time.time()}, f)
+    except OSError:
+        pass
+
+
+def _audio_files_with_durations(audio_extensions, audio_folder):
+    """Build audio_files list. Uses cached durations when fresh; else runs ffprobe and saves cache."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    entries = []
+    for root, _dirs, files in os.walk(audio_folder):
+        for f in files:
+            lower = f.lower()
+            if any(lower.endswith(ext) for ext in audio_extensions):
+                path = os.path.join(root, f)
+                try:
+                    stat = os.stat(path)
+                    rel_path = os.path.relpath(path, audio_folder)
+                    entries.append({
+                        'path': path,
+                        'name': os.path.basename(path),
+                        'rel_path': rel_path,
+                        'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                    })
+                except OSError:
+                    pass
+    if not entries:
+        return []
+    cache = _load_audio_durations_cache()
+    missing = [e for e in entries if not cache or e['rel_path'] not in cache]
+    if missing:
+        # Probe only missing files; merge with existing cache
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(_audio_duration_sec, e['path']): e for e in missing}
+            for future in as_completed(futures):
+                e = futures[future]
+                try:
+                    duration_sec = future.result()
+                    cache = cache or {}
+                    cache[e['rel_path']] = duration_sec
+                except Exception:
+                    cache = cache or {}
+                    cache[e['rel_path']] = None
+        _save_audio_durations_cache(cache)
+    for e in entries:
+        duration_sec = (cache or {}).get(e['rel_path'])
+        e['duration_sec'] = duration_sec
+        e['duration_display'] = _format_duration(duration_sec) if duration_sec else None
+    return sorted(entries, key=lambda x: x['name'].lower())
+
+
+
 def _build_chunks_list(settings=None):
     """Build chunks list (no ffprobe). settings used for days_to_expire."""
     from datetime import datetime
@@ -174,27 +281,11 @@ def index():
 
     chunks = _build_chunks_list(settings)
 
-    # List audio files (same extensions as clip_pusher)
+    # List audio files (same extensions as clip_pusher); ffprobe runs in parallel
     audio_files = []
     audio_extensions = ('.mp3', '.aac', '.flac', '.ogg', '.wav', '.m4a')
     if AUDIO_FOLDER and os.path.isdir(AUDIO_FOLDER):
-        for root, _dirs, files in os.walk(AUDIO_FOLDER):
-            for f in files:
-                lower = f.lower()
-                if any(lower.endswith(ext) for ext in audio_extensions):
-                    path = os.path.join(root, f)
-                    try:
-                        stat = os.stat(path)
-                        rel_path = os.path.relpath(path, AUDIO_FOLDER)
-                        audio_files.append({
-                            'name': os.path.basename(path),
-                            'path': path,
-                            'rel_path': rel_path,
-                            'size_mb': round(stat.st_size / (1024 * 1024), 2)
-                        })
-                    except OSError:
-                        pass
-        audio_files.sort(key=lambda x: x['name'].lower())
+        audio_files = _audio_files_with_durations(audio_extensions, AUDIO_FOLDER)
 
     current_audio = current_status.get('current_audio')
 
@@ -438,6 +529,106 @@ def _fetch_og_meta(url: str, timeout: float = 5.0) -> dict:
     return result
 
 
+MODEL_THUMBNAIL_CACHE_FILENAME = '.model_thumbnails.json'
+
+
+def _extract_video_id(path):
+    """Extract 11-char YouTube video ID from path (e.g. .../abc123.mp4 -> abc123)."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if stem and len(stem) == 11 and stem.replace('-', '').replace('_', '').isalnum():
+        return stem
+    return None
+
+
+def _find_video_id_for_model(model):
+    """Scan chunk metas for a source video that has this model; return video_id (random if multiple)."""
+    import random as _random
+    candidates = []
+    if not os.path.isdir(CHUNK_FOLDER):
+        return None
+    for f in os.listdir(CHUNK_FOLDER):
+        if not f.endswith('.mp4') or f.startswith('chunk_temp'):
+            continue
+        meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
+        if not os.path.isfile(meta_path):
+            continue
+        try:
+            with open(meta_path, 'r') as fp:
+                meta = json.load(fp)
+        except (json.JSONDecodeError, OSError):
+            continue
+        sources = meta.get('source_videos') or []
+        model_info = meta.get('model_info') or []
+        chunk_candidates = []
+        for item in sources:
+            if not isinstance(item, dict):
+                continue
+            m = item.get('model')
+            if m and m == model:
+                path = item.get('path')
+                if path:
+                    vid = _extract_video_id(path)
+                    if vid:
+                        chunk_candidates.append(vid)
+        if not chunk_candidates and model in model_info:
+            for item in sources:
+                if not isinstance(item, dict):
+                    continue
+                path = item.get('path')
+                if path:
+                    vid = _extract_video_id(path)
+                    if vid:
+                        chunk_candidates.append(vid)
+        candidates.extend(chunk_candidates)
+    return _random.choice(candidates) if candidates else None
+
+
+def _model_thumbnail_cache_path():
+    cache_dir = STATS_DIR or CHUNK_FOLDER
+    return os.path.join(cache_dir, MODEL_THUMBNAIL_CACHE_FILENAME)
+
+
+def _load_model_thumbnail_cache():
+    path = _model_thumbnail_cache_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_model_thumbnail_cache(cache):
+    path = _model_thumbnail_cache_path()
+    cache_dir = os.path.dirname(path)
+    if cache_dir and not os.path.isdir(cache_dir):
+        return
+    try:
+        with open(path, 'w') as f:
+            json.dump(cache, f)
+    except OSError:
+        pass
+
+
+def _get_youtube_thumbnail_for_model(model, video_id_from_play_counts, stored_thumb_url):
+    """Get YouTube thumbnail URL for model. Uses play_counts video_id, then cache, then scans chunks."""
+    if video_id_from_play_counts and len(video_id_from_play_counts) == 11:
+        return f"https://img.youtube.com/vi/{video_id_from_play_counts}/hqdefault.jpg"
+    cache = _load_model_thumbnail_cache()
+    cached = cache.get(model)
+    if cached and len(cached) == 11:
+        return f"https://img.youtube.com/vi/{cached}/hqdefault.jpg"
+    vid = _find_video_id_for_model(model)
+    if vid:
+        cache[model] = vid
+        _save_model_thumbnail_cache(cache)
+        return f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+    if stored_thumb_url and 'img.youtube.com' in str(stored_thumb_url):
+        return stored_thumb_url
+    return None
+
+
 def _stats_context():
     """Build stream_stats and play_counts for stats page."""
     current_status = clip_pusher.get_status()
@@ -448,7 +639,6 @@ def _stats_context():
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
     play_counts = clip_pusher.get_play_counts()
-    # Enrich models with og:title, og:image, and YouTube thumbnail (when video_id available)
     models_enriched = []
     for item in play_counts.get('models', []):
         model, count = item[0], item[1]
@@ -457,8 +647,7 @@ def _stats_context():
         url = model if model.startswith('http') else 'https://' + model
         meta = _fetch_og_meta(url)
         title = html.unescape(meta.get('title') or url)
-        # Prefer YouTube thumbnail from video_id (play_counts) when available; else stored_thumb, else OG image
-        thumbnail = (f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else None) or stored_thumb or meta.get('image')
+        thumbnail = _get_youtube_thumbnail_for_model(model, video_id, stored_thumb)
         models_enriched.append({
             'url': url,
             'count': count,
@@ -794,6 +983,19 @@ def play_chunk():
     ok = clip_pusher.play_chunk(chunk_name)
     if not ok:
         return jsonify({'success': False, 'error': 'Chunk not found'}), 404
+    return jsonify({'success': True})
+
+
+@app.route('/api/play_audio', methods=['POST'])
+def play_audio():
+    """Switch to a specific audio track in the stream."""
+    data = request.get_json()
+    audio_name = data.get('audio_name') if data else None
+    if not audio_name or not isinstance(audio_name, str):
+        return jsonify({'success': False, 'error': 'Missing or invalid audio_name'}), 400
+    ok = clip_pusher.play_audio(audio_name)
+    if not ok:
+        return jsonify({'success': False, 'error': 'Audio not found'}), 404
     return jsonify({'success': True})
 
 
