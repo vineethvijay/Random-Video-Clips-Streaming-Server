@@ -43,7 +43,10 @@ def fetch_video_metadata(base_url: str, token: str, video_id: str) -> dict:
     if m:
         out["model_info"] = m.group(1).strip()
     out["title"] = data.get("title") or data.get("video_title")
-    out["channel"] = data.get("channel_name") or data.get("channel")
+    ch = data.get("channel_name") or data.get("channel")
+    if isinstance(ch, dict):
+        ch = ch.get("channel_name") or ch.get("channel") or None
+    out["channel"] = ch
     thumb = (
         data.get("vid_thumb_url")
         or data.get("thumbnail_url")
@@ -60,20 +63,40 @@ def fetch_video_metadata(base_url: str, token: str, video_id: str) -> dict:
     return out
 
 
+def shorten_model(s: str) -> str:
+    """Shorten for display: https://www.instagram.com/xxx -> instagram.com/xxx, max 42 chars."""
+    s = (s or "").strip().replace("\n", "").replace("\r", "")
+    if s.startswith("https://"):
+        s = s[8:]
+    if s.startswith("www."):
+        s = s[4:]
+    return s[:42] if len(s) > 42 else s
+
+
 def main() -> None:
-    if len(sys.argv) != 4:
-        print(json.dumps({"model_info": None, "thumbnail_url": None, "title": None, "channel": None}))
+    model_only = "--model-only" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--model-only"]
+    if len(args) != 3:
+        if not model_only:
+            print(json.dumps({"model_info": None, "thumbnail_url": None, "title": None, "channel": None}))
         sys.exit(1)
-    _, base_url, token, path_or_id = sys.argv
+    base_url, token, path_or_id = args
     if not base_url or not token or not path_or_id:
-        print(json.dumps({"model_info": None, "thumbnail_url": None, "title": None, "channel": None}))
+        if not model_only:
+            print(json.dumps({"model_info": None, "thumbnail_url": None, "title": None, "channel": None}))
         sys.exit(1)
     video_id = extract_video_id(path_or_id) if "/" in path_or_id else path_or_id
     if not video_id:
-        print(json.dumps({"model_info": None, "thumbnail_url": None, "title": None, "channel": None}))
+        if not model_only:
+            print(json.dumps({"model_info": None, "thumbnail_url": None, "title": None, "channel": None}))
         sys.exit(0)
     result = fetch_video_metadata(base_url, token, video_id)
-    print(json.dumps(result))
+    if model_only:
+        model = result.get("model_info")
+        model = model.strip() if isinstance(model, str) else ""
+        print(shorten_model(model))
+    else:
+        print(json.dumps(result))
 
 
 if __name__ == "__main__":
