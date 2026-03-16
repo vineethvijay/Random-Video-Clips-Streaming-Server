@@ -51,6 +51,7 @@ services:
       - VIDEO_HOST_PATH=${VIDEO_FOLDER:-./videos}
       - TUBEARCHIVIST_URL=${TUBEARCHIVIST_URL:-}
       - TUBEARCHIVIST_TOKEN=${TUBEARCHIVIST_TOKEN:-}
+      - VIDEO_WALL=${VIDEO_WALL:-0}
       - OUTPUT_DIR=/chunks
       - STATS_DIR=/app/stats
       - TRIGGER_DIR=/app/trigger

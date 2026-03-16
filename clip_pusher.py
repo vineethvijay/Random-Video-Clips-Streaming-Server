@@ -7,6 +7,7 @@ import glob
 import json
 import os
 import random
+import re
 import subprocess
 import threading
 import time
@@ -145,6 +146,19 @@ class ClipPusher:
     def _play_counts_path(self) -> str:
         return os.path.join(self._stats_dir, PLAY_COUNTS_FILENAME)
 
+    @staticmethod
+    def _normalize_model_url(url: str) -> str:
+        """Canonical form: https://www.<domain>/<path> — lowercase, no trailing slash/hash/query."""
+        s = (url or '').strip()
+        if not s:
+            return s
+        s = re.sub(r'^https?://', '', s)
+        s = re.sub(r'^(ww+\.)', 'www.', s)  # fix typos like ww.
+        if not s.startswith('www.'):
+            s = 'www.' + s if '.' in s.split('/')[0] else s
+        s = s.split('?')[0].split('#')[0].rstrip('/')
+        return 'https://' + s.lower() if s else url
+
     def _load_play_counts(self) -> dict:
         path = self._play_counts_path()
         if os.path.isfile(path):
@@ -184,36 +198,26 @@ class ClipPusher:
                     meta = json.load(f)
                 raw_sources = meta.get('source_videos') or []
                 model_to_video = {}
-                model_to_thumbnail = {}
-                fallback_vid = None
                 for item in raw_sources:
                     path = item.get('path') if isinstance(item, dict) else (item if isinstance(item, str) else None)
                     model = item.get('model') if isinstance(item, dict) else None
-                    thumb = item.get('thumbnail_url') if isinstance(item, dict) else None
-                    if path:
+                    if path and model:
                         vid = self._extract_video_id(path)
-                        if vid:
-                            if not fallback_vid:
-                                fallback_vid = vid
-                            if model and model not in model_to_video:
-                                model_to_video[model] = vid
-                            if model and model not in model_to_thumbnail:
-                                model_to_thumbnail[model] = thumb or f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
-                for m in (meta.get('model_info') or []):
-                    if m:
-                        vid = model_to_video.get(m) or fallback_vid
-                        thumb = model_to_thumbnail.get(m)
+                        if vid and model not in model_to_video:
+                            model_to_video[model] = vid
+                for raw_m in (meta.get('model_info') or []):
+                    if raw_m:
+                        m = self._normalize_model_url(raw_m)
+                        vid = model_to_video.get(raw_m)
                         entry = models.get(m)
                         if isinstance(entry, dict):
                             entry['count'] = entry.get('count', 0) + 1
-                            if vid:
+                            if vid and not entry.get('video_id'):
                                 entry['video_id'] = vid
-                            if thumb:
-                                entry['thumbnail_url'] = thumb
                         elif isinstance(entry, (int, float)):
-                            models[m] = {'count': entry + 1, 'video_id': vid, 'thumbnail_url': thumb} if (vid or thumb) else entry + 1
+                            models[m] = {'count': entry + 1, 'video_id': vid} if vid else entry + 1
                         else:
-                            models[m] = {'count': 1, 'video_id': vid, 'thumbnail_url': thumb} if (vid or thumb) else 1
+                            models[m] = {'count': 1, 'video_id': vid} if vid else 1
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -225,19 +229,29 @@ class ClipPusher:
         self._save_play_counts(data)
 
     def get_play_counts(self) -> dict:
-        """Return top models and audio by play count."""
+        """Return top models and audio by play count, merging URL variants."""
         data = self._load_play_counts()
         models = data.get('models', {})
         audio = data.get('audio', {})
-        top_models = []
+
+        merged = {}
         for url, entry in models.items():
+            norm = self._normalize_model_url(url)
             count = entry.get('count', entry) if isinstance(entry, dict) else entry
             video_id = entry.get('video_id') if isinstance(entry, dict) else None
             thumbnail_url = entry.get('thumbnail_url') if isinstance(entry, dict) else None
-            top_models.append((url, count, video_id, thumbnail_url))
+            if norm in merged:
+                merged[norm]['count'] += count
+                if video_id and not merged[norm]['video_id']:
+                    merged[norm]['video_id'] = video_id
+                if thumbnail_url and not merged[norm]['thumbnail_url']:
+                    merged[norm]['thumbnail_url'] = thumbnail_url
+            else:
+                merged[norm] = {'count': count, 'video_id': video_id, 'thumbnail_url': thumbnail_url}
+
+        top_models = [(url, m['count'], m['video_id'], m['thumbnail_url']) for url, m in merged.items()]
         top_models.sort(key=lambda x: -x[1])
-        top_models = top_models[:20]
-        top_audio = sorted(audio.items(), key=lambda x: -x[1])[:20]
+        top_audio = sorted(audio.items(), key=lambda x: -x[1])
         return {'models': top_models, 'audio': top_audio}
 
     def get_status(self) -> dict:

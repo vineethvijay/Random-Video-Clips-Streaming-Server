@@ -92,6 +92,7 @@ def _format_duration(seconds):
 
 
 AUDIO_DURATIONS_CACHE_FILENAME = '.audio_durations.json'
+CHUNKS_META_CACHE_FILENAME = '.chunks_meta_cache.json'
 
 
 def _audio_duration_sec(path):
@@ -186,72 +187,152 @@ def _audio_files_with_durations(audio_extensions, audio_folder):
 
 
 
-def _build_chunks_list(settings=None):
-    """Build chunks list (no ffprobe). settings used for days_to_expire."""
-    from datetime import datetime
+def _chunks_meta_cache_path():
+    cache_dir = STATS_DIR or CHUNK_FOLDER
+    return os.path.join(cache_dir, CHUNKS_META_CACHE_FILENAME)
+
+
+def _load_chunks_meta_cache():
+    path = _chunks_meta_cache_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        return data.get('entries') or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_chunks_meta_cache(entries):
+    path = _chunks_meta_cache_path()
+    cache_dir = os.path.dirname(path)
+    if cache_dir and not os.path.isdir(cache_dir):
+        return
+    try:
+        with open(path, 'w') as f:
+            json.dump({'entries': entries, 'updated_at': time.time()}, f)
+    except OSError:
+        pass
+
+
+def _normalize_source_video(item):
+    """Normalize a single source_videos entry (handle old string format + nested channel objects)."""
+    if isinstance(item, str):
+        return {'path': item, 'model': None, 'thumbnail_url': None, 'title': None, 'channel': None}
+    if isinstance(item, dict) and 'path' in item:
+        ch = item.get('channel')
+        if isinstance(ch, dict):
+            ch = ch.get('channel_name') or ch.get('channel') or ''
+        return {
+            'path': item['path'],
+            'model': item.get('model'),
+            'thumbnail_url': item.get('thumbnail_url'),
+            'title': item.get('title'),
+            'channel': ch or None,
+        }
+    return None
+
+
+def _parse_chunk_meta(meta_path):
+    """Read and normalize a .meta.json file. Returns dict or None."""
     import json as _json
+    try:
+        with open(meta_path, 'r') as f:
+            meta = _json.load(f)
+        raw_sources = meta.get('source_videos') or []
+        source_videos = [s for s in (_normalize_source_video(item) for item in raw_sources) if s]
+        return {
+            'source_videos': source_videos,
+            'model_info': meta.get('model_info') or [],
+            'video_codec': meta.get('video_codec'),
+            'width': meta.get('width'),
+            'height': meta.get('height'),
+            'created_at': meta.get('created_at'),
+        }
+    except (ValueError, OSError):
+        return None
+
+
+def _build_chunks_list(settings=None):
+    """Build chunks list. Uses per-chunk metadata cache — only re-reads .meta.json when mtime changes."""
+    from datetime import datetime
     import math
     settings = settings or {}
     chunks = []
-    if os.path.exists(CHUNK_FOLDER):
-        for f in os.listdir(CHUNK_FOLDER):
-            if f.endswith('.mp4') and not f.startswith('chunk_temp'):
-                filepath = os.path.join(CHUNK_FOLDER, f)
-                stat = os.stat(filepath)
-                meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
-                source_videos = []
-                model_info = []
-                video_codec = None
-                width = None
-                height = None
-                created_at_str = None
-                if os.path.isfile(meta_path):
-                    try:
-                        with open(meta_path, 'r') as _f:
-                            meta = _json.load(_f)
-                            raw_sources = meta.get('source_videos') or []
-                            # Normalize: support old [path, ...] and new [{path, model}, ...]
-                            source_videos = []
-                            for item in raw_sources:
-                                if isinstance(item, str):
-                                    source_videos.append({'path': item, 'model': None, 'thumbnail_url': None, 'title': None, 'channel': None})
-                                elif isinstance(item, dict) and 'path' in item:
-                                    source_videos.append({
-                                        'path': item['path'],
-                                        'model': item.get('model'),
-                                        'thumbnail_url': item.get('thumbnail_url'),
-                                        'title': item.get('title'),
-                                        'channel': item.get('channel'),
-                                    })
-                            model_info = meta.get('model_info') or []
-                            video_codec = meta.get('video_codec')
-                            width = meta.get('width')
-                            height = meta.get('height')
-                            created_at_str = meta.get('created_at')
-                    except (ValueError, OSError):
-                        pass
-                if created_at_str:
-                    try:
-                        dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                        created_at_display = dt.strftime('%Y-%m-%d %H:%M:%S')
-                        timestamp = dt.timestamp()
-                    except (ValueError, TypeError):
-                        created_at_display = datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
-                        timestamp = stat.st_ctime
-                else:
-                    created_at_display = datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
-                    timestamp = stat.st_ctime
-                chunks.append({
-                    'name': f,
-                    'created_at': created_at_display,
-                    'timestamp': timestamp,
-                    'size_mb': round(stat.st_size / (1024 * 1024), 2),
-                    'source_videos': source_videos,
-                    'model_info': model_info,
-                    'video_codec': video_codec,
-                    'width': width,
-                    'height': height,
-                })
+    if not os.path.exists(CHUNK_FOLDER):
+        return chunks
+
+    cache = _load_chunks_meta_cache()
+    cache_dirty = False
+
+    for f in os.listdir(CHUNK_FOLDER):
+        if not f.endswith('.mp4') or f.startswith('chunk_temp'):
+            continue
+        filepath = os.path.join(CHUNK_FOLDER, f)
+        try:
+            stat = os.stat(filepath)
+        except OSError:
+            continue
+
+        meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
+        cached_entry = cache.get(f)
+        meta_mtime = 0
+        if os.path.isfile(meta_path):
+            try:
+                meta_mtime = os.path.getmtime(meta_path)
+            except OSError:
+                pass
+
+        if cached_entry and cached_entry.get('meta_mtime') == meta_mtime and meta_mtime > 0:
+            parsed = cached_entry
+        else:
+            parsed = _parse_chunk_meta(meta_path) if meta_mtime > 0 else None
+            if parsed:
+                parsed['meta_mtime'] = meta_mtime
+                cache[f] = parsed
+                cache_dirty = True
+            else:
+                parsed = {'source_videos': [], 'model_info': [], 'video_codec': None,
+                          'width': None, 'height': None, 'created_at': None, 'meta_mtime': 0}
+                if f in cache:
+                    del cache[f]
+                    cache_dirty = True
+
+        created_at_str = parsed.get('created_at')
+        if created_at_str:
+            try:
+                dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                created_at_display = dt.strftime('%Y-%m-%d %H:%M:%S')
+                timestamp = dt.timestamp()
+            except (ValueError, TypeError):
+                created_at_display = datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
+                timestamp = stat.st_ctime
+        else:
+            created_at_display = datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
+            timestamp = stat.st_ctime
+
+        chunks.append({
+            'name': f,
+            'created_at': created_at_display,
+            'timestamp': timestamp,
+            'size_mb': round(stat.st_size / (1024 * 1024), 2),
+            'source_videos': parsed.get('source_videos', []),
+            'model_info': parsed.get('model_info', []),
+            'video_codec': parsed.get('video_codec'),
+            'width': parsed.get('width'),
+            'height': parsed.get('height'),
+        })
+
+    stale_keys = set(cache.keys()) - {c['name'] for c in chunks}
+    if stale_keys:
+        for k in stale_keys:
+            del cache[k]
+        cache_dirty = True
+
+    if cache_dirty:
+        _save_chunks_meta_cache(cache)
+
     chunks.sort(key=lambda x: x['timestamp'], reverse=True)
     if chunks:
         max_chunks = int(settings.get('MAX_CHUNKS', '56'))
@@ -540,46 +621,26 @@ def _extract_video_id(path):
     return None
 
 
+def _normalize_model(url):
+    """Thin wrapper so app.py can reuse ClipPusher's URL normalizer."""
+    return ClipPusher._normalize_model_url(url)
+
+
 def _find_video_id_for_model(model):
-    """Scan chunk metas for a source video that has this model; return video_id (random if multiple)."""
+    """Find a YouTube video_id for a model using the chunks meta cache."""
     import random as _random
+    norm = _normalize_model(model)
+    cache = _load_chunks_meta_cache()
     candidates = []
-    if not os.path.isdir(CHUNK_FOLDER):
-        return None
-    for f in os.listdir(CHUNK_FOLDER):
-        if not f.endswith('.mp4') or f.startswith('chunk_temp'):
-            continue
-        meta_path = os.path.join(CHUNK_FOLDER, f.replace('.mp4', '.meta.json'))
-        if not os.path.isfile(meta_path):
-            continue
-        try:
-            with open(meta_path, 'r') as fp:
-                meta = json.load(fp)
-        except (json.JSONDecodeError, OSError):
-            continue
-        sources = meta.get('source_videos') or []
-        model_info = meta.get('model_info') or []
-        chunk_candidates = []
+    for _name, entry in cache.items():
+        sources = entry.get('source_videos') or []
         for item in sources:
             if not isinstance(item, dict):
                 continue
-            m = item.get('model')
-            if m and m == model:
-                path = item.get('path')
-                if path:
-                    vid = _extract_video_id(path)
-                    if vid:
-                        chunk_candidates.append(vid)
-        if not chunk_candidates and model in model_info:
-            for item in sources:
-                if not isinstance(item, dict):
-                    continue
-                path = item.get('path')
-                if path:
-                    vid = _extract_video_id(path)
-                    if vid:
-                        chunk_candidates.append(vid)
-        candidates.extend(chunk_candidates)
+            if _normalize_model(item.get('model', '')) == norm:
+                vid = _extract_video_id(item.get('path', ''))
+                if vid:
+                    candidates.append(vid)
     return _random.choice(candidates) if candidates else None
 
 
@@ -629,6 +690,31 @@ def _get_youtube_thumbnail_for_model(model, video_id_from_play_counts, stored_th
     return None
 
 
+def _parse_model_platform(model_str):
+    """Detect platform and extract username from a model URL string."""
+    m = (model_str or '').strip()
+    clean = re.sub(r'^https?://(www\.)?', '', m)
+    if re.search(r'instagram\.com/', clean, re.I):
+        name = re.sub(r'.*instagram\.com/@?', '', clean, flags=re.I).split('/')[0].split('?')[0].split('#')[0]
+        return 'instagram', name or clean, model_str if model_str.startswith('http') else 'https://' + clean
+    if re.search(r'tiktok\.com', clean, re.I):
+        match = re.search(r'@([a-zA-Z0-9_.]+)', clean)
+        name = '@' + match.group(1) if match else clean.split('/')[-1].split('?')[0] or clean
+        return 'tiktok', name, model_str if model_str.startswith('http') else 'https://' + clean
+    return 'other', clean[:36], model_str if model_str.startswith('http') else 'https://' + clean
+
+
+def _find_channel_for_model(model):
+    """Find the channel name for a model from the chunks meta cache."""
+    norm = _normalize_model(model)
+    cache = _load_chunks_meta_cache()
+    for _name, entry in cache.items():
+        for item in (entry.get('source_videos') or []):
+            if isinstance(item, dict) and _normalize_model(item.get('model', '')) == norm and item.get('channel'):
+                return item['channel']
+    return None
+
+
 def _stats_context():
     """Build stream_stats and play_counts for stats page."""
     current_status = clip_pusher.get_status()
@@ -644,15 +730,18 @@ def _stats_context():
         model, count = item[0], item[1]
         video_id = item[2] if len(item) > 2 else None
         stored_thumb = item[3] if len(item) > 3 else None
-        url = model if model.startswith('http') else 'https://' + model
-        meta = _fetch_og_meta(url)
-        title = html.unescape(meta.get('title') or url)
+        platform, username, url = _parse_model_platform(model)
+        channel = _find_channel_for_model(model)
         thumbnail = _get_youtube_thumbnail_for_model(model, video_id, stored_thumb)
+        yt_vid = video_id if (video_id and len(video_id) == 11) else _find_video_id_for_model(model)
         models_enriched.append({
             'url': url,
             'count': count,
-            'title': title,
+            'username': username,
+            'platform': platform,
+            'channel': channel,
             'image': thumbnail,
+            'yt': f"https://www.youtube.com/watch?v={yt_vid}" if yt_vid else None,
         })
     play_counts = dict(play_counts, models=models_enriched)
     return {'stream_stats': stream_stats, 'play_counts': play_counts}
