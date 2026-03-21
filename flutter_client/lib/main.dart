@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import 'src/screens/admin_screen.dart';
+import 'src/screens/app_shell.dart';
 import 'src/screens/home_screen.dart';
 import 'src/screens/stats_screen.dart';
 import 'src/services/streaming_api.dart';
@@ -21,9 +22,23 @@ class RandomVideoStreamerApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final router = GoRouter(
       routes: [
-        GoRoute(path: '/', builder: (context, state) => HomeScreen(api: api)),
-        GoRoute(path: '/admin', builder: (context, state) => AdminScreen(api: api)),
-        GoRoute(path: '/stats', builder: (context, state) => StatsScreen(api: api)),
+        ShellRoute(
+          builder: (context, state, child) => AppShell(child: child),
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) => HomeScreen(api: api),
+            ),
+            GoRoute(
+              path: '/admin',
+              builder: (context, state) => AdminScreen(api: api),
+            ),
+            GoRoute(
+              path: '/stats',
+              builder: (context, state) => StatsScreen(api: api),
+            ),
+          ],
+        ),
       ],
     );
 
@@ -31,6 +46,7 @@ class RandomVideoStreamerApp extends StatelessWidget {
       routerConfig: router,
       title: 'Random Video Streamer',
       theme: AppTheme.dark(),
+      debugShowCheckedModeBanner: false,
     );
   }
 }
