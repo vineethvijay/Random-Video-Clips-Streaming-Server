@@ -7,7 +7,7 @@ set -euo pipefail
 
 DEFAULT_HOST="localhost"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT_DIR/flutter_client"
+APP_DIR="$ROOT_DIR/frontend-flutter"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
@@ -63,4 +63,4 @@ docker run --rm \
     chown -R $HOST_UID:$HOST_GID /app/build /app/dist /app/.dart_tool /app/.flutter-plugins* 2>/dev/null || true
   "
 
-echo "Android build complete: flutter_client/dist/android/$ARTIFACT_NAME"
+echo "Android build complete: frontend-flutter/dist/android/$ARTIFACT_NAME"

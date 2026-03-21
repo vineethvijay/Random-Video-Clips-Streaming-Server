@@ -39,7 +39,7 @@ scripts/flutter-web-build-docker.sh \
 
 Output:
 
-- `flutter_client/build/web`
+- `frontend-flutter/build/web`
 
 ### Build Android APK
 
@@ -52,7 +52,7 @@ scripts/flutter-android-build-docker.sh \
 
 Output:
 
-- `flutter_client/dist/android/random-video-streamer-release.apk`
+- `frontend-flutter/dist/android/random-video-streamer-release.apk`
 
 ### Build Android App Bundle (Play Store)
 
@@ -65,7 +65,7 @@ scripts/flutter-android-build-docker.sh \
 
 Output:
 
-- `flutter_client/dist/android/random-video-streamer-release.aab`
+- `frontend-flutter/dist/android/random-video-streamer-release.aab`
 
 Both scripts run `flutter create --platforms=android,web .` inside Docker, so platform folders are generated without local Flutter.
 
@@ -79,7 +79,7 @@ ENABLE_LIVE_STREAM=true scripts/flutter-android-build-docker.sh apk
 ## Local Flutter run (optional)
 
 ```bash
-cd flutter_client
+cd frontend-flutter
 flutter pub get
 flutter run \
   --dart-define=API_BASE_URL=http://<server-ip>:8081 \

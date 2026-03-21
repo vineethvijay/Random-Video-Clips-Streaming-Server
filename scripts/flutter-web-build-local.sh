@@ -7,7 +7,7 @@ set -euo pipefail
 
 DEFAULT_HOST="localhost"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT_DIR/flutter_client"
+APP_DIR="$ROOT_DIR/frontend-flutter"
 FLUTTER_BIN="${FLUTTER_BIN:-/Users/vineeth/flutter/flutter/bin}"
 
 if [[ -x "$FLUTTER_BIN/flutter" ]]; then
@@ -55,7 +55,7 @@ flutter build web --release \
   --dart-define=HLS_URL="$HLS_URL" \
   --dart-define=ENABLE_LIVE_STREAM="$ENABLE_LIVE_STREAM"
 
-echo "Web build complete: flutter_client/build/web"
+echo "Web build complete: frontend-flutter/build/web"
 
 if [[ "$SERVE_AFTER_BUILD" == "serve" ]]; then
   if ! command -v python3 >/dev/null 2>&1; then

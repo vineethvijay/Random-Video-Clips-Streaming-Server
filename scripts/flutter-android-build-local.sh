@@ -7,7 +7,7 @@ set -euo pipefail
 
 DEFAULT_HOST="localhost"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT_DIR/flutter_client"
+APP_DIR="$ROOT_DIR/frontend-flutter"
 FLUTTER_BIN="${FLUTTER_BIN:-/Users/vineeth/flutter/flutter/bin}"
 
 if [[ -x "$FLUTTER_BIN/flutter" ]]; then
@@ -71,4 +71,4 @@ flutter pub get
 mkdir -p "$(dirname "$TARGET_ARTIFACT")"
 cp "$SOURCE_ARTIFACT" "$TARGET_ARTIFACT"
 
-echo "Android build complete: flutter_client/$TARGET_ARTIFACT"
+echo "Android build complete: frontend-flutter/$TARGET_ARTIFACT"

@@ -49,7 +49,7 @@ echo "==> Step 1/3: Build Flutter web locally"
 echo "==> Step 2/3: Sync build/web to Proxmox"
 ssh "$DEPLOY_HOST" "mkdir -p \"$REMOTE_WEB_DIR\""
 rsync -avz --delete \
-  "$ROOT_DIR/flutter_client/build/web/" \
+  "$ROOT_DIR/frontend-flutter/build/web/" \
   "$DEPLOY_HOST:$REMOTE_WEB_DIR/"
 
 echo "==> Step 3/3: Restart nginx UI container on Proxmox"

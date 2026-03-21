@@ -7,7 +7,7 @@ set -euo pipefail
 
 DEFAULT_HOST="localhost"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT_DIR/flutter_client"
+APP_DIR="$ROOT_DIR/frontend-flutter"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
@@ -49,7 +49,7 @@ docker run --rm \
     chown -R $HOST_UID:$HOST_GID /app/build /app/.dart_tool /app/.flutter-plugins* 2>/dev/null || true
   "
 
-echo "Web build complete: flutter_client/build/web"
+echo "Web build complete: frontend-flutter/build/web"
 
 if [[ "$SERVE_AFTER_BUILD" == "serve" ]]; then
   echo "Starting preview server..."
