@@ -34,7 +34,8 @@ jobs:
       - name: Build streamer image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: backend
+          file: backend/Dockerfile
           push: false
           tags: random-video-streamer:test
           cache-from: type=gha
@@ -43,8 +44,8 @@ jobs:
       - name: Build chunk-generator image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile.generator
+          context: backend
+          file: backend/Dockerfile.generator
           push: false
           tags: chunk-generator:test
           cache-from: type=gha

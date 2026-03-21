@@ -30,12 +30,12 @@ services:
   # ── Chunk generator: cron + manual triggers ─────────────────────
   chunk-generator:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile.generator
     image: chunk-generator:latest
     container_name: chunk-generator
     volumes:
-      - ./generate_chunk.sh:/generate_chunk.sh:ro
+      - ./backend/generate_chunk.sh:/generate_chunk.sh:ro
       - ${VIDEO_FOLDER:-./videos}:/videos:ro
       - ${CHUNK_FOLDER:-./chunks}:/chunks
       - ${STATS_DIR:-./stats}:/app/stats
@@ -70,7 +70,9 @@ services:
 
   # ── Streamer: shuffles through pre-made chunks ─────────────────
   random-video-streamer:
-    build: .
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: random-video-streamer:latest
     container_name: random-video-streamer
     user: root  # needed for Docker socket access (restart chunk-generator from UI)
@@ -84,8 +86,7 @@ services:
       - trigger_volume:/app/trigger
       - /var/spool/cron/crontabs:/host-crontab:rw
       - ./.env:/app/.env
-      - ./app.py:/app/app.py:ro
-      - ./templates:/app/templates:ro
+      - ./backend/app.py:/app/app.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TZ=${TZ:-Europe/Amsterdam}
