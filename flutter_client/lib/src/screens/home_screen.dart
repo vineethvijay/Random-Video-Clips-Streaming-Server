@@ -9,12 +9,41 @@ import '../models/chunk.dart';
 import '../models/server_status.dart';
 import '../models/stream_status.dart';
 import '../services/streaming_api.dart';
-import '../widgets/dashboard_header.dart';
-import '../widgets/primary_meta_row.dart';
+import '../theme/app_theme.dart';
+import '../widgets/animated_progress_bar.dart';
+import '../widgets/glass_card.dart';
+import '../widgets/sources_sheet.dart';
+import '../widgets/stat_card.dart';
+
+// ──────────────────────────────────────────────────────────────────
+// Sort options
+// ──────────────────────────────────────────────────────────────────
+enum _ChunkSort { dateDesc, dateAsc, nameAsc, nameDesc, sizeDesc, sizeAsc }
+
+const _chunkSortLabels = <_ChunkSort, String>{
+  _ChunkSort.dateDesc: 'Date (newest)',
+  _ChunkSort.dateAsc: 'Date (oldest)',
+  _ChunkSort.nameAsc: 'Name (A–Z)',
+  _ChunkSort.nameDesc: 'Name (Z–A)',
+  _ChunkSort.sizeDesc: 'Size (largest)',
+  _ChunkSort.sizeAsc: 'Size (smallest)',
+};
+
+enum _AudioSort { nameAsc, nameDesc, durationAsc, durationDesc, sizeDesc, sizeAsc }
+
+const _audioSortLabels = <_AudioSort, String>{
+  _AudioSort.nameAsc: 'Name (A–Z)',
+  _AudioSort.nameDesc: 'Name (Z–A)',
+  _AudioSort.durationAsc: 'Duration (shortest)',
+  _AudioSort.durationDesc: 'Duration (longest)',
+  _AudioSort.sizeDesc: 'Size (largest)',
+  _AudioSort.sizeAsc: 'Size (smallest)',
+};
+
+// ──────────────────────────────────────────────────────────────────
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.api});
-
   final StreamingApi api;
 
   @override
@@ -28,19 +57,28 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Chunk> _chunks = <Chunk>[];
   List<AudioFile> _audioFiles = <AudioFile>[];
   String? _error;
-  /// Live HLS player errors (kept separate so API refresh never wipes them).
   String? _videoError;
   bool _loading = true;
   bool _runningAction = false;
+  bool _playerCollapsed = true;
   Timer? _pollTimer;
+  Timer? _progressTimer;
+
+  // Chunks
   final TextEditingController _chunkSearch = TextEditingController();
-  final TextEditingController _audioSearch = TextEditingController();
-  bool _chunksNewestFirst = true;
-  bool _audioLongestFirst = true;
+  _ChunkSort _chunkSort = _ChunkSort.dateDesc;
   int _chunksPage = 1;
+  static const int _chunksPerPage = 5;
+
+  // Audio
+  final TextEditingController _audioSearch = TextEditingController();
+  final TextEditingController _audioDurMin = TextEditingController();
+  final TextEditingController _audioDurMax = TextEditingController();
+  _AudioSort _audioSort = _AudioSort.durationDesc;
   int _audioPage = 1;
-  static const int _chunksPerPage = 8;
-  static const int _audioPerPage = 8;
+  static const int _audioPerPage = 4;
+
+  // ── Lifecycle ──
 
   @override
   void initState() {
@@ -49,8 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _videoController = VideoPlayerController.networkUrl(
         Uri.parse(widget.api.config.hlsUrl),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
-      _videoController!.addListener(_videoControllerListener);
+      )..addListener(_videoListener);
       _initializeVideo();
     }
     _refreshData();
@@ -58,203 +95,238 @@ class _HomeScreenState extends State<HomeScreen> {
       Duration(seconds: widget.api.config.refreshSeconds),
       (_) => _refreshData(silent: true),
     );
-  }
-
-  void _videoControllerListener() {
-    final c = _videoController;
-    if (c == null || !mounted) {
-      return;
-    }
-    if (c.value.hasError) {
-      final msg = c.value.errorDescription;
-      setState(() {
-        _videoError = (msg != null && msg.isNotEmpty)
-            ? msg
-            : 'Playback error (check HLS URL and CORS if on web).';
-      });
-    }
-  }
-
-  Future<void> _initializeVideo() async {
-    final controller = _videoController;
-    if (controller == null) {
-      return;
-    }
-    setState(() {
-      _videoError = null;
-    });
-    try {
-      await controller.initialize();
-      if (!mounted) {
-        return;
-      }
-      await controller.setLooping(true);
-      try {
-        await controller.play();
-      } catch (e) {
-        if (kIsWeb) {
-          setState(() {
-            _videoError =
-                'Autoplay may be blocked — use the Play button below. ($e)';
-          });
-        }
-      }
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _videoError = null;
-      });
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _videoError =
-              'Could not load live stream. On web, ensure HLS is served with CORS and use http/https consistently.\n$e';
-        });
-      }
-    }
-  }
-
-  Future<void> _retryLiveVideo() async {
-    _videoController?.removeListener(_videoControllerListener);
-    await _videoController?.dispose();
-    _videoController = VideoPlayerController.networkUrl(
-      Uri.parse(widget.api.config.hlsUrl),
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-    );
-    _videoController!.addListener(_videoControllerListener);
-    await _initializeVideo();
-    if (mounted) {
-      setState(() {});
-    }
+    _progressTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _tick());
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _progressTimer?.cancel();
     _chunkSearch.dispose();
     _audioSearch.dispose();
-    _videoController?.removeListener(_videoControllerListener);
+    _audioDurMin.dispose();
+    _audioDurMax.dispose();
+    _videoController?.removeListener(_videoListener);
     _videoController?.dispose();
     super.dispose();
   }
 
-  Future<void> _refreshData({bool silent = false}) async {
-    if (!silent) {
+  // ── Video helpers ──
+
+  void _videoListener() {
+    final c = _videoController;
+    if (c == null || !mounted) return;
+    if (c.value.hasError) {
       setState(() {
-        _loading = true;
-        _error = null;
+        _videoError = c.value.errorDescription?.isNotEmpty == true
+            ? c.value.errorDescription
+            : 'Playback error';
       });
     }
+  }
+
+  Future<void> _initializeVideo() async {
+    final c = _videoController;
+    if (c == null) return;
+    setState(() => _videoError = null);
     try {
-      String? warning;
+      await c.initialize();
+      if (!mounted) return;
+      await c.setLooping(true);
+      try {
+        await c.play();
+      } catch (e) {
+        if (kIsWeb) {
+          setState(() => _videoError = 'Autoplay may be blocked ($e)');
+        }
+      }
+      if (mounted) setState(() => _videoError = null);
+    } catch (e) {
+      if (mounted) setState(() => _videoError = 'Could not load stream.\n$e');
+    }
+  }
+
+  Future<void> _retryVideo() async {
+    _videoController?.removeListener(_videoListener);
+    await _videoController?.dispose();
+    _videoController = VideoPlayerController.networkUrl(
+      Uri.parse(widget.api.config.hlsUrl),
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+    )..addListener(_videoListener);
+    await _initializeVideo();
+    if (mounted) setState(() {});
+  }
+
+  // ── Data ──
+
+  Future<void> _refreshData({bool silent = false}) async {
+    if (!silent) setState(() { _loading = true; _error = null; });
+    try {
       final streamStatus = await widget.api.getStreamStatus();
       ServerStatus? serverStatus;
       List<Chunk> chunks = <Chunk>[];
-      List<AudioFile> audioFiles = <AudioFile>[];
-
-      try {
-        serverStatus = await widget.api.getServerStatus();
-      } catch (_) {
-        warning = 'Could not load server status.';
-      }
-      try {
-        chunks = await widget.api.getChunks(limit: 200);
-      } catch (_) {
-        warning = warning ?? 'Could not load chunks.';
-      }
-      try {
-        audioFiles = await widget.api.getAudioFiles(limit: 300);
-      } catch (_) {
-        warning = warning ?? 'Could not load audio list.';
-      }
-
-      if (!mounted) {
-        return;
-      }
+      List<AudioFile> audio = <AudioFile>[];
+      String? warn;
+      try { serverStatus = await widget.api.getServerStatus(); } catch (_) { warn = 'Could not load server status.'; }
+      try { chunks = await widget.api.getChunks(limit: 200); } catch (_) { warn ??= 'Could not load chunks.'; }
+      try { audio = await widget.api.getAudioFiles(limit: 300); } catch (_) { warn ??= 'Could not load audio.'; }
+      if (!mounted) return;
       setState(() {
         _streamStatus = streamStatus;
         _serverStatus = serverStatus ?? _serverStatus;
         _chunks = chunks;
-        _audioFiles = audioFiles;
-        _chunksPage = 1;
-        _audioPage = 1;
+        _audioFiles = audio;
         _loading = false;
-        _error = warning;
+        _error = warn;
       });
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _loading = false;
-        _error = e.toString();
-      });
+      if (mounted) setState(() { _loading = false; _error = '$e'; });
     }
   }
+
+  void _tick() { if (mounted) setState(() {}); }
 
   void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg)),
+    );
   }
 
-  Future<void> _runAction(Future<void> Function() action) async {
-    if (_runningAction) {
-      return;
-    }
-    setState(() {
-      _runningAction = true;
-      _error = null;
-    });
+  Future<void> _run(Future<void> Function() action) async {
+    if (_runningAction) return;
+    setState(() { _runningAction = true; _error = null; });
     try {
       await action();
       await _refreshData(silent: true);
     } catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
+      setState(() => _error = '$e');
     } finally {
-      if (mounted) {
-        setState(() {
-          _runningAction = false;
-        });
-      }
+      if (mounted) setState(() => _runningAction = false);
     }
   }
 
+  // ── Filtering / sorting ──
+
   List<Chunk> get _visibleChunks {
-    var out = _chunks;
+    var out = _chunks.toList();
     final q = _chunkSearch.text.trim().toLowerCase();
     if (q.isNotEmpty) {
       out = out.where((c) => c.name.toLowerCase().contains(q)).toList();
     }
-    out.sort((a, b) => _chunksNewestFirst
-        ? b.createdAt.compareTo(a.createdAt)
-        : a.createdAt.compareTo(b.createdAt));
+    // Remove now-playing from the list — it's pinned separately
+    final np = _streamStatus?.currentChunk;
+    if (np != null) out = out.where((c) => c.name != np).toList();
+
+    switch (_chunkSort) {
+      case _ChunkSort.dateDesc:
+        out.sort((a, b) => (b.timestamp ?? 0).compareTo(a.timestamp ?? 0));
+      case _ChunkSort.dateAsc:
+        out.sort((a, b) => (a.timestamp ?? 0).compareTo(b.timestamp ?? 0));
+      case _ChunkSort.nameAsc:
+        out.sort((a, b) => a.name.compareTo(b.name));
+      case _ChunkSort.nameDesc:
+        out.sort((a, b) => b.name.compareTo(a.name));
+      case _ChunkSort.sizeDesc:
+        out.sort((a, b) => b.sizeMb.compareTo(a.sizeMb));
+      case _ChunkSort.sizeAsc:
+        out.sort((a, b) => a.sizeMb.compareTo(b.sizeMb));
+    }
     return out;
   }
 
   List<AudioFile> get _visibleAudio {
-    var out = _audioFiles;
+    var out = _audioFiles.toList();
     final q = _audioSearch.text.trim().toLowerCase();
     if (q.isNotEmpty) {
       out = out.where((a) => a.name.toLowerCase().contains(q)).toList();
     }
-    out = out.where((a) => a.name != _streamStatus?.currentAudio).toList();
-    out.sort((a, b) {
-      final ad = a.durationSec ?? 0;
-      final bd = b.durationSec ?? 0;
-      return _audioLongestFirst ? bd.compareTo(ad) : ad.compareTo(bd);
-    });
+    // Duration filter
+    final minSec = _parseDuration(_audioDurMin.text);
+    final maxSec = _parseDuration(_audioDurMax.text);
+    if (minSec != null || maxSec != null) {
+      out = out.where((a) {
+        final d = a.durationSec;
+        if (d == null) return false;
+        if (minSec != null && d < minSec) return false;
+        if (maxSec != null && d > maxSec) return false;
+        return true;
+      }).toList();
+    }
+    // Remove now-playing
+    final np = _streamStatus?.currentAudio;
+    if (np != null) out = out.where((a) => a.name != np).toList();
+
+    switch (_audioSort) {
+      case _AudioSort.nameAsc:
+        out.sort((a, b) => a.name.compareTo(b.name));
+      case _AudioSort.nameDesc:
+        out.sort((a, b) => b.name.compareTo(a.name));
+      case _AudioSort.durationAsc:
+        out.sort((a, b) => (a.durationSec ?? 0).compareTo(b.durationSec ?? 0));
+      case _AudioSort.durationDesc:
+        out.sort((a, b) => (b.durationSec ?? 0).compareTo(a.durationSec ?? 0));
+      case _AudioSort.sizeDesc:
+        out.sort((a, b) => b.sizeMb.compareTo(a.sizeMb));
+      case _AudioSort.sizeAsc:
+        out.sort((a, b) => a.sizeMb.compareTo(b.sizeMb));
+    }
     return out;
   }
 
-  List<T> _pageItems<T>(List<T> items, int page, int perPage) {
+  int? _parseDuration(String s) {
+    s = s.trim();
+    if (s.isEmpty) return null;
+    final m = RegExp(r'^(\d+):(\d{1,2})(?::(\d{1,2}))?$').firstMatch(s);
+    if (m != null) {
+      final h = m.group(3) != null ? int.parse(m.group(1)!) : 0;
+      final min = m.group(3) != null ? int.parse(m.group(2)!) : int.parse(m.group(1)!);
+      final sec = m.group(3) != null ? int.parse(m.group(3)!) : int.parse(m.group(2)!);
+      return h * 3600 + min * 60 + sec;
+    }
+    final n = int.tryParse(s);
+    return n != null && n >= 0 ? n : null;
+  }
+
+  List<T> _page<T>(List<T> items, int page, int perPage) {
     if (items.isEmpty) return <T>[];
     final start = (page - 1) * perPage;
     if (start >= items.length || start < 0) return <T>[];
-    final end = (start + perPage).clamp(0, items.length);
-    return items.sublist(start, end);
+    return items.sublist(start, (start + perPage).clamp(0, items.length));
   }
+
+  // ── Progress calculations ──
+
+  double _chunkProgress() {
+    final st = _streamStatus;
+    if (st == null) return 0;
+    final startedAt = st.currentChunkStartedAt;
+    final duration = st.currentChunkDuration;
+    if (startedAt == null || duration == null || duration <= 0) return 0;
+    final now = DateTime.now().millisecondsSinceEpoch / 1000;
+    final elapsed = now - startedAt.toDouble();
+    return (elapsed / duration.toDouble()).clamp(0.0, 1.0);
+  }
+
+  String _fmtSec(num? sec) {
+    if (sec == null || sec < 0) return '0:00';
+    final m = (sec ~/ 60);
+    final s = (sec.toInt() % 60);
+    return '$m:${s.toString().padLeft(2, '0')}';
+  }
+
+  double _audioProgress() {
+    final st = _streamStatus;
+    if (st == null) return 0;
+    final pos = st.audioPositionSec;
+    final dur = st.audioTrackDurationSec;
+    if (pos != null && dur != null && dur > 0) {
+      return (pos / dur).clamp(0.0, 1.0);
+    }
+    return 0;
+  }
+
+  // ── BUILD ──
 
   @override
   Widget build(BuildContext context) {
@@ -266,477 +338,932 @@ class _HomeScreenState extends State<HomeScreen> {
               onRefresh: _refreshData,
               child: SelectionArea(
                 child: ListView(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   children: [
-                  DashboardHeader(
-                    title: 'Streaming Dashboard',
-                    onRefresh: _loading ? null : _refreshData,
-                  ),
-                  _sectionHeader(context, 'Overview'),
-                  _buildOverviewStrip(context),
-                  const SizedBox(height: 12),
-                  _buildPlayerCard(),
-                  const SizedBox(height: 12),
-                  _sectionHeader(context, 'Controls'),
-                  _buildActionsCard(),
-                  const SizedBox(height: 12),
-                  _sectionHeader(context, 'Video Chunks'),
-                  _buildChunksToolbar(context),
-                  const SizedBox(height: 12),
-                  _buildChunksCard(),
-                  const SizedBox(height: 12),
-                  _sectionHeader(context, 'Audio Library'),
-                  _buildAudioToolbar(context),
-                  const SizedBox(height: 12),
-                  _buildAudioCard(),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    _buildErrorCard(_error!),
+                    _buildHeader(context),
+                    const SizedBox(height: 16),
+                    _buildOverviewStrip(context),
+                    const SizedBox(height: 16),
+                    _buildPlayerCard(context),
+                    const SizedBox(height: 20),
+                    _buildChunksSection(context),
+                    const SizedBox(height: 20),
+                    _buildAudioSection(context),
+                    if (_error != null) ...[
+                      const SizedBox(height: 16),
+                      _buildErrorCard(context, _error!),
+                    ],
                   ],
-                ],
                 ),
               ),
             ),
     );
   }
 
-  Widget _sectionHeader(BuildContext context, String title) {
+  // ── Header ──
+
+  Widget _buildHeader(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Text(
-        title,
-        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: cs.primary,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.15,
-            ),
-      ),
+    final tt = Theme.of(context).textTheme;
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            gradient: LinearGradient(colors: [
+              cs.primary.withValues(alpha: 0.3),
+              cs.tertiary.withValues(alpha: 0.2),
+            ]),
+            border: Border.all(color: cs.primary.withValues(alpha: 0.4)),
+          ),
+          child: Icon(Icons.play_circle_fill_rounded, color: cs.primary, size: 26),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text('Streaming Dashboard',
+              style: tt.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+        ),
+        IconButton.filledTonal(
+          onPressed: _loading ? null : _refreshData,
+          icon: const Icon(Icons.refresh_rounded),
+          tooltip: 'Refresh',
+        ),
+      ],
     );
   }
+
+  // ── Overview strip ──
 
   Widget _buildOverviewStrip(BuildContext context) {
     return Wrap(
       spacing: 10,
       runSpacing: 10,
       children: [
-        _chip(context, 'Chunks', '${_chunks.length}'),
-        _chip(context, 'Audio files', '${_audioFiles.length}'),
-        _chip(context, 'Current chunk', _streamStatus?.currentChunk ?? '-'),
-        _chip(context, 'Current audio', _streamStatus?.currentAudio ?? '-'),
+        StatCard(
+          label: 'Chunks',
+          value: '${_chunks.length}',
+          icon: Icons.video_library_rounded,
+          gradientStart: AppTheme.accentCyan.withValues(alpha: 0.15),
+          gradientEnd: AppTheme.accentCyan.withValues(alpha: 0.05),
+        ),
+        StatCard(
+          label: 'Audio Files',
+          value: '${_audioFiles.length}',
+          icon: Icons.library_music_rounded,
+          gradientStart: AppTheme.accentEmerald.withValues(alpha: 0.15),
+          gradientEnd: AppTheme.accentEmerald.withValues(alpha: 0.05),
+        ),
+        StatCard(
+          label: 'Now Playing',
+          value: _streamStatus?.currentChunk ?? '—',
+          icon: Icons.live_tv_rounded,
+          gradientStart: AppTheme.nowPlayingBlue.withValues(alpha: 0.15),
+          gradientEnd: AppTheme.nowPlayingBlue.withValues(alpha: 0.05),
+        ),
+        StatCard(
+          label: 'Now Audio',
+          value: _streamStatus?.currentAudio ?? '—',
+          icon: Icons.music_note_rounded,
+          gradientStart: AppTheme.accentAmber.withValues(alpha: 0.15),
+          gradientEnd: AppTheme.accentAmber.withValues(alpha: 0.05),
+        ),
       ],
     );
   }
 
-  Widget _chip(BuildContext context, String label, String value) {
-    final cs = Theme.of(context).colorScheme;
-    final base = Theme.of(context).textTheme.bodyMedium;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: cs.outline.withValues(alpha: 0.4)),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: base?.copyWith(color: cs.onSurfaceVariant),
-          children: [
-            TextSpan(text: '$label: '),
-            TextSpan(
-              text: value,
-              style: base?.copyWith(
-                color: cs.onSurface,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  // ── Live stream player ──
 
-  Widget _buildPlayerCard() {
+  Widget _buildPlayerCard(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     if (!widget.api.config.enableLiveStream) {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Live Stream', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text('Live stream player is off by default.'),
-              const SizedBox(height: 6),
-              Text(
-                'Rebuild with ENABLE_LIVE_STREAM=true if you want the embedded HLS player.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
+      return GlassCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.live_tv_rounded, size: 18, color: AppTheme.accentEmerald),
+              const SizedBox(width: 8),
+              Text('Live Stream', style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+            ]),
+            const SizedBox(height: 8),
+            Text('Rebuild with ENABLE_LIVE_STREAM=true to enable the embedded HLS player.',
+                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          ],
         ),
       );
     }
 
     final controller = _videoController;
     final initialized = controller?.value.isInitialized ?? false;
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return GlassCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: [
+          // Collapsible header
+          InkWell(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            onTap: () => setState(() {
+              _playerCollapsed = !_playerCollapsed;
+              if (!_playerCollapsed && !initialized) _retryVideo();
+            }),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Icon(
+                    _playerCollapsed ? Icons.play_arrow_rounded : Icons.expand_more_rounded,
+                    color: cs.onSurfaceVariant,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Live Stream',
+                      style: tt.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.accentEmerald)),
+                  const Spacer(),
+                  if (initialized && controller!.value.isPlaying)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppTheme.accentEmerald.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text('LIVE',
+                          style: tt.labelSmall?.copyWith(
+                              color: AppTheme.accentEmerald,
+                              fontWeight: FontWeight.w800)),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          // Body
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Column(
               children: [
-                const Expanded(
-                  child: Text('Live Stream', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
+                Divider(height: 1, color: cs.outline.withValues(alpha: 0.15)),
+                if (_videoError != null) ...[
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: cs.errorContainer.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(_videoError!,
+                          style: tt.bodySmall?.copyWith(color: cs.onErrorContainer)),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Wrap(spacing: 8, children: [
+                      FilledButton.tonalIcon(
+                        onPressed: _retryVideo,
+                        icon: const Icon(Icons.refresh_rounded, size: 16),
+                        label: const Text('Retry'),
+                      ),
+                      if (initialized && kIsWeb)
+                        FilledButton.icon(
+                          onPressed: () async {
+                            await controller?.play();
+                            setState(() {});
+                          },
+                          icon: const Icon(Icons.play_circle_outline, size: 16),
+                          label: const Text('Play'),
+                        ),
+                    ]),
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 if (initialized)
-                  IconButton.filledTonal(
-                    tooltip: controller!.value.isPlaying ? 'Pause' : 'Play',
-                    onPressed: () async {
-                      if (controller.value.isPlaying) {
+                  GestureDetector(
+                    onTap: () async {
+                      if (controller!.value.isPlaying) {
                         await controller.pause();
                       } else {
                         await controller.play();
                       }
                       setState(() {});
                     },
-                    icon: Icon(
-                      controller.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    child: AspectRatio(
+                      aspectRatio: controller!.value.aspectRatio == 0
+                          ? 16 / 9
+                          : controller.value.aspectRatio,
+                      child: VideoPlayer(controller),
+                    ),
+                  )
+                else if (_videoError == null)
+                  const AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                  ),
+                if (initialized)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          onPressed: () async {
+                            if (controller!.value.isPlaying) {
+                              await controller.pause();
+                            } else {
+                              await controller.play();
+                            }
+                            setState(() {});
+                          },
+                          icon: Icon(controller!.value.isPlaying
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded),
+                          iconSize: 22,
+                        ),
+                        IconButton(
+                          onPressed: () async {
+                            final vol = controller!.value.volume;
+                            await controller.setVolume(vol > 0 ? 0 : 1.0);
+                            setState(() {});
+                          },
+                          icon: Icon(
+                            controller!.value.volume == 0
+                                ? Icons.volume_off_rounded
+                                : Icons.volume_up_rounded,
+                          ),
+                          iconSize: 20,
+                        ),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderThemeData(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                              activeTrackColor: cs.primary,
+                              inactiveTrackColor: cs.surfaceContainerHighest,
+                              thumbColor: cs.primary,
+                            ),
+                            child: Slider(
+                              value: controller!.value.volume,
+                              onChanged: (v) async {
+                                await controller!.setVolume(v);
+                                setState(() {});
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
               ],
             ),
-            const SizedBox(height: 10),
-            if (_videoError != null) ...[
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: cs.errorContainer.withValues(alpha: 0.65),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  _videoError!,
-                  style: tt.bodySmall?.copyWith(color: cs.onErrorContainer),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.tonalIcon(
-                    onPressed: _retryLiveVideo,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('Retry'),
-                  ),
-                  if (initialized && kIsWeb)
-                    FilledButton.icon(
-                      onPressed: () async {
-                        await controller?.play();
-                        setState(() {});
-                      },
-                      icon: const Icon(Icons.play_circle_outline),
-                      label: const Text('Play'),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-            ],
-            if (initialized)
-              AspectRatio(
-                aspectRatio: controller!.value.aspectRatio == 0
-                    ? 16 / 9
-                    : controller.value.aspectRatio,
-                child: VideoPlayer(controller),
-              )
-            else if (_videoError == null)
-              const AspectRatio(
-                aspectRatio: 16 / 9,
-                child: Center(child: CircularProgressIndicator()),
-              ),
-            const SizedBox(height: 8),
-            SelectableText(
-              widget.api.config.hlsUrl,
-              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-            ),
-            if (kIsWeb)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(
-                  'Web uses HLS.js for .m3u8. The stream host must allow CORS for playlists and segments.',
-                  style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant),
-                ),
-              ),
-          ],
-        ),
+            crossFadeState: _playerCollapsed
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
+            duration: const Duration(milliseconds: 250),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildActionsCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            ElevatedButton.icon(
-              onPressed: _runningAction ? null : () => _runAction(widget.api.skipToNext),
-              icon: const Icon(Icons.skip_next),
-              label: const Text('Skip Video'),
-            ),
-            ElevatedButton.icon(
-              onPressed: _runningAction ? null : () => _runAction(widget.api.skipToNextAudio),
-              icon: const Icon(Icons.music_note),
-              label: const Text('Skip Audio'),
-            ),
-            ElevatedButton.icon(
-              onPressed: _runningAction ? null : () => _runAction(widget.api.generateChunks),
-              icon: const Icon(Icons.playlist_add),
-              label: const Text('Generate Chunks'),
-            ),
-            if (_serverStatus?.generationInProgress == true)
-              Chip(
-                label: const Text('Generation in progress'),
-                backgroundColor: Theme.of(context).colorScheme.errorContainer,
-                labelStyle: TextStyle(
-                  color: Theme.of(context).colorScheme.onErrorContainer,
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
+  // ───────────────────────────────────────────────
+  // CHUNKS SECTION
+  // ───────────────────────────────────────────────
 
-  Widget _buildChunksToolbar(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            SizedBox(
-              width: 260,
-              child: TextField(
-                controller: _chunkSearch,
-                onChanged: (_) => setState(() => _chunksPage = 1),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Search chunk filename',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            FilterChip(
-              selected: _chunksNewestFirst,
-              label: Text(_chunksNewestFirst ? 'Newest first' : 'Oldest first'),
-              onSelected: (_) => setState(() {
-                _chunksNewestFirst = !_chunksNewestFirst;
-                _chunksPage = 1;
-              }),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildChunksCard() {
+  Widget _buildChunksSection(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final visible = _visibleChunks;
     final totalPages = visible.isEmpty ? 1 : (visible.length / _chunksPerPage).ceil();
     final page = _chunksPage.clamp(1, totalPages);
-    final paged = _pageItems(visible, page, _chunksPerPage);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Recent Chunks', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            if (visible.isEmpty)
-              const Text('No chunks found')
-            else
-              ...paged.map((chunk) {
-                final meta =
-                    '${chunk.createdAt} • ${chunk.sizeMb} MB'
-                    '${chunk.daysToExpire != null ? ' • expires in ${chunk.daysToExpire}d' : ''}';
-                return PrimaryMetaRow(
-                  primary: chunk.name,
-                  meta: meta,
-                  trailing: TextButton(
-                    onPressed: _runningAction
-                        ? null
-                        : () => _runAction(() async {
-                            await widget.api.playChunk(chunk.name);
-                            _toast('Chunk "${chunk.name}" queued to play next');
+    final paged = _page(visible, page, _chunksPerPage);
+    final nowPlaying = _streamStatus?.currentChunk;
+    final npChunk = nowPlaying != null
+        ? _chunks.cast<Chunk?>().firstWhere((c) => c?.name == nowPlaying,
+            orElse: () => null)
+        : null;
+    final totalCount = _chunks.where((c) => c.name != nowPlaying).length;
+
+    return GlassCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            child: Row(
+              children: [
+                Icon(Icons.video_library_rounded, size: 18, color: cs.primary),
+                const SizedBox(width: 8),
+                Text('Video Chunks',
+                    style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                const Spacer(),
+                // Skip next
+                FilledButton.tonalIcon(
+                  onPressed: _runningAction
+                      ? null
+                      : () => _run(() async {
+                            await widget.api.skipToNext();
+                            _toast('Skipping to next video…');
                           }),
-                    child: const Text('Play Next'),
+                  icon: const Icon(Icons.skip_next_rounded, size: 16),
+                  label: const Text('Play Next'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.accentEmerald.withValues(alpha: 0.15),
+                    foregroundColor: AppTheme.accentEmerald,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
-                );
-              }),
-            if (visible.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              _buildPager(
-                page: page,
-                totalPages: totalPages,
-                onPrev: page > 1 ? () => setState(() => _chunksPage = page - 1) : null,
-                onNext: page < totalPages ? () => setState(() => _chunksPage = page + 1) : null,
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    visible.length == totalCount
+                        ? '$totalCount Chunks'
+                        : '${visible.length} of $totalCount',
+                    style: tt.labelSmall
+                        ?.copyWith(color: cs.primary, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Toolbar
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SizedBox(
+                  width: 200,
+                  child: TextField(
+                    controller: _chunkSearch,
+                    onChanged: (_) => setState(() => _chunksPage = 1),
+                    style: tt.bodySmall,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      hintText: 'Filter by filename…',
+                      prefixIcon: Icon(Icons.search_rounded, size: 18),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
+                  ),
+                ),
+                _sortDropdown<_ChunkSort>(
+                  value: _chunkSort,
+                  labels: _chunkSortLabels,
+                  onChanged: (v) => setState(() {
+                    _chunkSort = v;
+                    _chunksPage = 1;
+                  }),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: cs.outline.withValues(alpha: 0.12)),
+
+          // Now-playing row
+          if (npChunk != null) _buildNowPlayingChunkRow(context, npChunk),
+
+          // Chunk rows
+          if (paged.isEmpty && npChunk == null)
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Center(
+                child: Text('No chunks found',
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
               ),
-            ],
-          ],
-        ),
+            )
+          else
+            ...paged.map((c) => _buildChunkRow(context, c)),
+
+          // Pagination
+          if (visible.isNotEmpty)
+            _buildPagination(
+              page: page,
+              totalPages: totalPages,
+              onPrev: page > 1 ? () => setState(() => _chunksPage = page - 1) : null,
+              onNext: page < totalPages ? () => setState(() => _chunksPage = page + 1) : null,
+            ),
+        ],
       ),
     );
   }
 
-  Widget _buildAudioToolbar(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            SizedBox(
-              width: 260,
-              child: TextField(
-                controller: _audioSearch,
-                onChanged: (_) => setState(() => _audioPage = 1),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Search audio filename',
-                  border: OutlineInputBorder(),
+  Widget _buildNowPlayingChunkRow(BuildContext context, Chunk chunk) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final progress = _chunkProgress();
+    final st = _streamStatus;
+    final elapsed = st?.currentChunkStartedAt != null && st?.currentChunkDuration != null
+        ? (DateTime.now().millisecondsSinceEpoch / 1000 - st!.currentChunkStartedAt!.toDouble())
+            .clamp(0.0, st.currentChunkDuration!.toDouble())
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.nowPlayingBlue.withValues(alpha: 0.08),
+        border: Border(
+          left: BorderSide(color: AppTheme.nowPlayingBlue, width: 3),
+          bottom: BorderSide(color: cs.outline.withValues(alpha: 0.1)),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(chunk.name,
+                        style: tt.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700, color: cs.onSurface)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppTheme.nowPlayingBlue.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text('NOW PLAYING ▶',
+                          style: tt.labelSmall?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 9)),
+                    ),
+                    if (chunk.hasSources)
+                      InkWell(
+                        onTap: () => SourcesSheet.show(context, chunk),
+                        child: Text('Sources',
+                            style: tt.labelSmall?.copyWith(
+                                color: cs.primary, fontWeight: FontWeight.w600)),
+                      ),
+                  ],
                 ),
               ),
-            ),
-            FilterChip(
-              selected: _audioLongestFirst,
-              label: Text(_audioLongestFirst ? 'Longest first' : 'Shortest first'),
-              onSelected: (_) => setState(() {
-                _audioLongestFirst = !_audioLongestFirst;
-                _audioPage = 1;
-              }),
+              _pushButton(context, chunk.name, isChunk: true),
+            ],
+          ),
+          if (elapsed != null) ...[
+            const SizedBox(height: 8),
+            AnimatedProgressBar(
+              progress: progress,
+              elapsedLabel: _fmtSec(elapsed),
+              totalLabel: _fmtSec(st?.currentChunkDuration),
             ),
           ],
-        ),
+        ],
       ),
     );
   }
 
-  Widget _buildAudioCard() {
+  Widget _buildChunkRow(BuildContext context, Chunk chunk) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: cs.outline.withValues(alpha: 0.08)),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(chunk.name,
+                        style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                    if (chunk.hasSources)
+                      InkWell(
+                        onTap: () => SourcesSheet.show(context, chunk),
+                        child: Text('Sources',
+                            style: tt.labelSmall?.copyWith(
+                                color: cs.primary, fontWeight: FontWeight.w600)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  chunk.metaSummary,
+                  style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          _pushButton(context, chunk.name, isChunk: true),
+        ],
+      ),
+    );
+  }
+
+  // ───────────────────────────────────────────────
+  // AUDIO SECTION
+  // ───────────────────────────────────────────────
+
+  Widget _buildAudioSection(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final visible = _visibleAudio;
     final totalPages = visible.isEmpty ? 1 : (visible.length / _audioPerPage).ceil();
     final page = _audioPage.clamp(1, totalPages);
-    final paged = _pageItems(visible, page, _audioPerPage);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_streamStatus?.currentAudio != null)
-              Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.65),
+    final paged = _page(visible, page, _audioPerPage);
+    final nowPlaying = _streamStatus?.currentAudio;
+    final npAudio = nowPlaying != null
+        ? _audioFiles.cast<AudioFile?>().firstWhere((a) => a?.name == nowPlaying,
+            orElse: () => null)
+        : null;
+    final totalCount = _audioFiles.where((a) => a.name != nowPlaying).length;
+
+    return GlassCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            child: Row(
+              children: [
+                Icon(Icons.library_music_rounded, size: 18, color: cs.primary),
+                const SizedBox(width: 8),
+                Text('Audio Files',
+                    style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                const Spacer(),
+                if (_audioFiles.isNotEmpty)
+                  FilledButton.tonalIcon(
+                    onPressed: _runningAction
+                        ? null
+                        : () => _run(() async {
+                              await widget.api.skipToNextAudio();
+                              _toast('Skipping to next audio…');
+                            }),
+                    icon: const Icon(Icons.skip_next_rounded, size: 16),
+                    label: const Text('Next Audio'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppTheme.accentEmerald.withValues(alpha: 0.15),
+                      foregroundColor: AppTheme.accentEmerald,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    visible.length == totalCount
+                        ? '$totalCount files'
+                        : '${visible.length} of $totalCount',
+                    style: tt.labelSmall
+                        ?.copyWith(color: cs.primary, fontWeight: FontWeight.w700),
                   ),
                 ),
-                child: Text(
-                  'Now playing: ${_streamStatus!.currentAudio}',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                    fontWeight: FontWeight.w600,
+              ],
+            ),
+          ),
+          // Toolbar
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SizedBox(
+                  width: 180,
+                  child: TextField(
+                    controller: _audioSearch,
+                    onChanged: (_) => setState(() => _audioPage = 1),
+                    style: tt.bodySmall,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      hintText: 'Filter by filename…',
+                      prefixIcon: Icon(Icons.search_rounded, size: 18),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
                   ),
                 ),
-              ),
-            if (visible.isEmpty)
-              const Text('No audio files found')
-            else
-              ...paged.map((audio) {
-                final meta = '${audio.sizeMb} MB'
-                    '${audio.durationDisplay != null ? ' • ${audio.durationDisplay}' : ''}';
-                return PrimaryMetaRow(
-                  primary: audio.name,
-                  meta: meta,
-                  trailing: Wrap(
-                    spacing: 4,
-                    children: [
-                      TextButton(
-                        onPressed: _runningAction
-                            ? null
-                            : () => _runAction(() async {
-                                await widget.api.playAudio(audio.name);
-                                _toast('Audio "${audio.name}" queued');
-                              }),
-                        child: const Text('Play'),
-                      ),
-                      TextButton(
-                        onPressed: _runningAction
-                            ? null
-                            : () => _runAction(() async {
-                                await widget.api.deleteAudio(audio.path);
-                                _toast('Deleted "${audio.name}"');
-                              }),
-                        child: const Text('Delete'),
-                      ),
-                    ],
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _audioDurMin,
+                    onChanged: (_) => setState(() => _audioPage = 1),
+                    style: tt.bodySmall,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      hintText: 'Min (2:30)',
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
                   ),
-                );
-              }),
-            if (visible.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              _buildPager(
-                page: page,
-                totalPages: totalPages,
-                onPrev: page > 1 ? () => setState(() => _audioPage = page - 1) : null,
-                onNext: page < totalPages ? () => setState(() => _audioPage = page + 1) : null,
+                ),
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _audioDurMax,
+                    onChanged: (_) => setState(() => _audioPage = 1),
+                    style: tt.bodySmall,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      hintText: 'Max (5:00)',
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
+                  ),
+                ),
+                _sortDropdown<_AudioSort>(
+                  value: _audioSort,
+                  labels: _audioSortLabels,
+                  onChanged: (v) => setState(() {
+                    _audioSort = v;
+                    _audioPage = 1;
+                  }),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: cs.outline.withValues(alpha: 0.12)),
+
+          // Now-playing audio
+          if (npAudio != null) _buildNowPlayingAudioRow(context, npAudio),
+
+          // Audio rows
+          if (paged.isEmpty && npAudio == null)
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Center(
+                child: Text('No audio files found',
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
               ),
-            ],
-          ],
+            )
+          else
+            ...paged.map((a) => _buildAudioRow(context, a)),
+
+          // Pagination
+          if (visible.isNotEmpty)
+            _buildPagination(
+              page: page,
+              totalPages: totalPages,
+              onPrev: page > 1 ? () => setState(() => _audioPage = page - 1) : null,
+              onNext: page < totalPages ? () => setState(() => _audioPage = page + 1) : null,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNowPlayingAudioRow(BuildContext context, AudioFile audio) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final progress = _audioProgress();
+    final st = _streamStatus;
+    final pos = st?.audioPositionSec;
+    final dur = st?.audioTrackDurationSec;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.nowPlayingBlue.withValues(alpha: 0.08),
+        border: Border(
+          left: BorderSide(color: AppTheme.nowPlayingBlue, width: 3),
+          bottom: BorderSide(color: cs.outline.withValues(alpha: 0.1)),
         ),
       ),
-    );
-  }
-
-  Widget _buildPager({
-    required int page,
-    required int totalPages,
-    required VoidCallback? onPrev,
-    required VoidCallback? onNext,
-  }) {
-    return Row(
-      children: [
-        OutlinedButton(onPressed: onPrev, child: const Text('Prev')),
-        const SizedBox(width: 10),
-        Text('Page $page of $totalPages'),
-        const SizedBox(width: 10),
-        OutlinedButton(onPressed: onNext, child: const Text('Next')),
-      ],
-    );
-  }
-
-  Widget _buildErrorCard(String error) {
-    return Card(
-      color: Theme.of(context).colorScheme.errorContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Text(error),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(audio.name,
+                        style: tt.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700, color: cs.onSurface)),
+                    if (audio.durationDisplay != null)
+                      Text(audio.durationDisplay!,
+                          style: tt.labelSmall
+                              ?.copyWith(color: cs.onSurfaceVariant)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppTheme.nowPlayingBlue.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text('NOW PLAYING',
+                          style: tt.labelSmall?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 9)),
+                    ),
+                  ],
+                ),
+              ),
+              _pushButton(context, audio.name, isChunk: false),
+            ],
+          ),
+          if (pos != null && dur != null && dur > 0) ...[
+            const SizedBox(height: 8),
+            AnimatedProgressBar(
+              progress: progress,
+              elapsedLabel: _fmtSec(pos),
+              totalLabel: _fmtSec(dur),
+            ),
+          ],
+        ],
       ),
     );
   }
 
+  Widget _buildAudioRow(BuildContext context, AudioFile audio) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: cs.outline.withValues(alpha: 0.08)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(audio.name,
+                    style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Text(
+                  '${audio.sizeMb} MB${audio.durationDisplay != null ? ' · ${audio.durationDisplay}' : ''}',
+                  style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          _pushButton(context, audio.name, isChunk: false),
+          const SizedBox(width: 4),
+          IconButton(
+            onPressed: _runningAction
+                ? null
+                : () => _run(() async {
+                      await widget.api.deleteAudio(audio.path);
+                      _toast('Deleted "${audio.name}"');
+                    }),
+            icon: Icon(Icons.delete_outline_rounded,
+                size: 18, color: AppTheme.accentRose.withValues(alpha: 0.8)),
+            tooltip: 'Delete',
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Shared widgets ──
+
+  Widget _pushButton(BuildContext context, String name,
+      {required bool isChunk}) {
+    final cs = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 30,
+      child: TextButton(
+        onPressed: _runningAction
+            ? null
+            : () => _run(() async {
+                  if (isChunk) {
+                    await widget.api.playChunk(name);
+                    _toast('Pushed "$name" to stream');
+                  } else {
+                    await widget.api.playAudio(name);
+                    _toast('Pushed "$name" to stream');
+                  }
+                }),
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          backgroundColor: cs.surfaceContainerHighest.withValues(alpha: 0.6),
+          foregroundColor: cs.onSurface,
+          textStyle: Theme.of(context)
+              .textTheme
+              .labelSmall
+              ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        child: const Text('Push to stream'),
+      ),
+    );
+  }
+
+  Widget _sortDropdown<T extends Enum>({
+    required T value,
+    required Map<T, String> labels,
+    required ValueChanged<T> onChanged,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.25)),
+      ),
+      child: DropdownButton<T>(
+        value: value,
+        isDense: true,
+        underline: const SizedBox.shrink(),
+        dropdownColor: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(12),
+        style: tt.bodySmall?.copyWith(color: cs.onSurface),
+        icon: Icon(Icons.unfold_more_rounded, size: 16, color: cs.onSurfaceVariant),
+        items: labels.entries
+            .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+            .toList(),
+        onChanged: (v) {
+          if (v != null) onChanged(v);
+        },
+      ),
+    );
+  }
+
+  Widget _buildPagination({
+    required int page,
+    required int totalPages,
+    VoidCallback? onPrev,
+    VoidCallback? onNext,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text('Page $page of $totalPages',
+              style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
+          Row(
+            children: [
+              IconButton(
+                onPressed: onPrev,
+                icon: const Icon(Icons.chevron_left_rounded),
+                iconSize: 20,
+                visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+                onPressed: onNext,
+                icon: const Icon(Icons.chevron_right_rounded),
+                iconSize: 20,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorCard(BuildContext context, String error) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.errorContainer.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(error,
+          style: TextStyle(color: cs.onErrorContainer)),
+    );
+  }
 }
