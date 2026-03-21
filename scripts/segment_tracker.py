@@ -106,6 +106,59 @@ def pick_start(
     return random.randint(fallback_min, fallback_max)
 
 
+def pick_and_record_start(
+    json_path: str,
+    video_path: str,
+    duration_sec: float,
+    clip_len_sec: int,
+    zone_min: Optional[float] = None,
+    zone_max: Optional[float] = None,
+) -> int:
+    """Pick a start and immediately record [start, start+clip_len] in one file read/write cycle."""
+    data = load_used(json_path)
+    used = data.get("videos", {}).get(video_path, [])
+    duration_sec = max(0, duration_sec)
+    clip_len_sec = max(1, clip_len_sec)
+    max_start = int(duration_sec - clip_len_sec)
+    if max_start <= 0:
+        start = 0
+    else:
+        free = free_intervals(duration_sec, used)
+        long_enough = [(a, b) for a, b in free if (b - a) >= clip_len_sec]
+
+        if zone_min is not None and zone_max is not None:
+            z_min, z_max = float(zone_min), float(zone_max)
+            long_enough = [
+                (max(a, z_min), min(b - clip_len_sec, z_max))
+                for a, b in long_enough
+                if a <= z_max and b >= z_min + clip_len_sec
+            ]
+            long_enough = [(a, b) for a, b in long_enough if b >= a]
+            fallback_min = max(0, int(z_min))
+            fallback_max = min(max_start, int(z_max))
+            if fallback_max < fallback_min:
+                fallback_max = fallback_min
+        else:
+            fallback_min, fallback_max = 0, max_start
+
+        if long_enough:
+            a, b = random.choice(long_enough)
+            start = int(a + random.random() * max(0, b - a))
+        else:
+            start = random.randint(fallback_min, fallback_max)
+
+    videos = data.setdefault("videos", {})
+    intervals = videos.setdefault(video_path, [])
+    end = float(start + clip_len_sec)
+    intervals.append([float(start), end])
+    merged = merge_intervals(intervals)
+    if len(merged) > MAX_INTERVALS_PER_VIDEO:
+        merged = merged[-MAX_INTERVALS_PER_VIDEO:]
+    videos[video_path] = merged
+    save_used(json_path, data)
+    return int(start)
+
+
 def record_used(json_path: str, video_path: str, start_sec: float, end_sec: float) -> None:
     data = load_used(json_path)
     videos = data.setdefault("videos", {})
@@ -132,6 +185,15 @@ def main() -> None:
         zone_min = float(sys.argv[6]) if len(sys.argv) >= 8 else None
         zone_max = float(sys.argv[7]) if len(sys.argv) >= 8 else None
         start = pick_start(json_path, video_path, float(dur_s), int(float(clip_s)), zone_min, zone_max)
+        print(start)
+    elif cmd == "pick_record":
+        if len(sys.argv) not in (6, 8):
+            print(f"Usage: {FILENAME} pick_record <json_path> <video_path> <duration_sec> <clip_len_sec> [zone_min] [zone_max]", file=sys.stderr)
+            sys.exit(2)
+        json_path, video_path, dur_s, clip_s = sys.argv[2:6]
+        zone_min = float(sys.argv[6]) if len(sys.argv) >= 8 else None
+        zone_max = float(sys.argv[7]) if len(sys.argv) >= 8 else None
+        start = pick_and_record_start(json_path, video_path, float(dur_s), int(float(clip_s)), zone_min, zone_max)
         print(start)
     elif cmd == "record":
         if len(sys.argv) != 6:

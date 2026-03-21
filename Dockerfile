@@ -4,6 +4,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -25,6 +26,7 @@ EXPOSE 8080
 
 # Set Python to unbuffered mode for logs
 ENV PYTHONUNBUFFERED=1
+ENV TZ=Europe/Amsterdam
 
 # Switch to non-root user
 USER appuser

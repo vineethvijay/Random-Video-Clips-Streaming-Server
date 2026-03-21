@@ -1,8 +1,11 @@
 FROM linuxserver/ffmpeg:version-6.1.1-cli
 
-# Install required packages for generation script + segment tracker (Python) + font for drawtext
-RUN apt-get update && apt-get install -y bash bc python3 fonts-dejavu-core fontconfig && \
+# Install required packages for generation script + segment tracker (Python) + fonts.
+# Install distro ffmpeg so drawtext is available in the runtime binary.
+RUN apt-get update && apt-get install -y bash bc python3 ffmpeg fonts-dejavu-core fontconfig tzdata && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+ENV PATH="/usr/bin:${PATH}"
+ENV TZ=Europe/Amsterdam
 
 # Suppress "Cannot load default config file" from libass/subtitles filter
 RUN mkdir -p /etc/fonts

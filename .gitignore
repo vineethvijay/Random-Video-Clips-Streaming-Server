@@ -14,6 +14,7 @@ build/
 
 .cursor/
 .cursorrules
+*.mdc
 
 # Configuration
 .env
@@ -45,3 +46,4 @@ chunks/
 stats/
 
 deploy/
+

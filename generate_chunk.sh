@@ -20,7 +20,13 @@ HW_ACCEL="${HW_ACCEL:-none}"
 VIDEO_WALL="${VIDEO_WALL:-0}"
 
 RUNNING_FILE="$OUTPUT_DIR/.generation_running"
-cleanup() { rm -f "$RUNNING_FILE"; }
+DURATION_CACHE=""
+MODEL_CACHE=""
+cleanup() {
+  rm -f "$RUNNING_FILE"
+  [ -n "$DURATION_CACHE" ] && rm -f "$DURATION_CACHE"
+  [ -n "$MODEL_CACHE" ] && rm -f "$MODEL_CACHE"
+}
 trap cleanup EXIT
 
 mkdir -p "$OUTPUT_DIR"
@@ -74,6 +80,69 @@ else
 fi
 rm -f "$CURRENT_VIDEOS"
 
+DURATION_CACHE=$(mktemp /tmp/video_durations_XXXX.txt)
+MODEL_CACHE=$(mktemp /tmp/video_models_XXXX.txt)
+HAS_DRAWTEXT=0
+HAS_NVENC=0
+NVENC_WARNED=0
+
+if ffmpeg -hide_banner -filters 2>/dev/null | grep -qE '(^| )drawtext( |$)'; then
+  HAS_DRAWTEXT=1
+fi
+if ffmpeg -hide_banner -encoders 2>/dev/null | grep -qE '(^| )h264_nvenc( |$)'; then
+  HAS_NVENC=1
+fi
+
+get_video_duration() {
+  local path="$1"
+  local cached
+  cached=$(awk -F'\t' -v p="$path" '$1==p { print $2; exit }' "$DURATION_CACHE")
+  if [ -n "$cached" ]; then
+    echo "$cached"
+    return
+  fi
+
+  local d
+  d=$(ffprobe -v error -show_entries format=duration \
+    -of default=noprint_wrappers=1:nokey=1 "$path" 2>/dev/null | cut -d. -f1)
+  if ! [ "$d" -ge 0 ] 2>/dev/null; then
+    d=0
+  fi
+  printf '%s\t%s\n' "$path" "$d" >> "$DURATION_CACHE"
+  echo "$d"
+}
+
+get_model_label_cached() {
+  local path="$1"
+  local cached
+
+  # Cache avoids repeated API hits for the same source in one run.
+  cached=$(awk -F'\t' -v p="$path" '$1==p { $1=""; sub(/^\t/, "", $0); print; exit }' "$MODEL_CACHE")
+  if [ -n "$cached" ] || awk -F'\t' -v p="$path" '$1==p { found=1 } END { exit(found?0:1) }' "$MODEL_CACHE"; then
+    echo "$cached"
+    return
+  fi
+
+  local model=""
+  if [ -n "${TUBEARCHIVIST_URL}" ] && [ -n "${TUBEARCHIVIST_TOKEN}" ] && [ -f "${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}" ]; then
+    model=$(python3 "${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}" --model-only "${TUBEARCHIVIST_URL}" "${TUBEARCHIVIST_TOKEN}" "$path" 2>/dev/null)
+  fi
+  model=$(printf '%s' "$model" | tr '\t' ' ')
+  printf '%s\t%s\n' "$path" "$model" >> "$MODEL_CACHE"
+  echo "$model"
+}
+
+escape_drawtext_text() {
+  # Escape text for ffmpeg drawtext text='...'
+  printf '%s' "$1" | python3 -c "import sys; t=sys.stdin.read().rstrip(); t=t.replace('\\\\','\\\\\\\\').replace(':','\\\\:').replace(\"'\",\"\\\\'\").replace('%','\\\\%').replace(',','\\\\,'); print(t)"
+}
+
+format_watermark_label() {
+  local label="$1"
+  # Keep only the ID/path fragment for known social URLs; no icon/prefix.
+  printf '%s' "$label" | python3 -c "import re,sys; s=sys.stdin.read().strip(); s=s.replace('https://','').replace('http://',''); s=re.sub(r'^www\\.', '', s, flags=re.I); s=re.sub(r'^(instagram\\.com|tiktok\\.com)/?', '', s, flags=re.I); print(s.strip('/'))"
+}
+
 touch "$RUNNING_FILE"
 
 # Persistent stats dir: mount this so hours played / chunks ever created survive new deployments (optional)
@@ -116,8 +185,7 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
     echo "$file" >> "${QUEUE_FILE}.tmp"
     mv "${QUEUE_FILE}.tmp" "$QUEUE_FILE"
 
-    dur=$(ffprobe -v error -show_entries format=duration \
-      -of default=noprint_wrappers=1:nokey=1 "$file" | cut -d. -f1)
+    dur=$(get_video_duration "$file")
 
     clip_len=$(( RANDOM % (CLIP_MAX - CLIP_MIN + 1) + CLIP_MIN ))
     max_start=$(( dur - clip_len ))
@@ -125,15 +193,26 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
 
     tmp="/tmp/clip_${idx}.mp4"
 
-    # Fetch model for watermark (bottom-left text)
-    MODEL_LABEL=""
-    if [ -n "${TUBEARCHIVIST_URL}" ] && [ -n "${TUBEARCHIVIST_TOKEN}" ] && [ -f "${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}" ]; then
-      MODEL_LABEL=$(python3 "${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}" --model-only "${TUBEARCHIVIST_URL}" "${TUBEARCHIVIST_TOKEN}" "$file" 2>/dev/null)
+    # Fetch/cached model for watermark (bottom-left text)
+    MODEL_LABEL=$(get_model_label_cached "$file")
+    # No TubeArchivist hit → optional env fallback, or test clip always shows something so you can check style/position
+    if [ -z "$MODEL_LABEL" ] && [ -n "${WATERMARK_FALLBACK}" ]; then
+      MODEL_LABEL="$WATERMARK_FALLBACK"
+    fi
+    if [ -z "$MODEL_LABEL" ] && [ "$TEST_MODE" = "1" ]; then
+      MODEL_LABEL="${WATERMARK_FALLBACK:-Sample watermark}"
+    fi
+    if [ "$TEST_MODE" = "1" ]; then
+      echo "  [test] Watermark text will be: ${MODEL_LABEL:-<empty — no burn-in>}"
     fi
 
-    if [ "$HW_ACCEL" = "nvidia" ]; then
+    if [ "$HW_ACCEL" = "nvidia" ] && [ "$HAS_NVENC" = "1" ]; then
       ENCODER_ARGS="-c:v h264_nvenc -preset p4"
     else
+      if [ "$HW_ACCEL" = "nvidia" ] && [ "$HAS_NVENC" != "1" ] && [ "$NVENC_WARNED" = "0" ]; then
+        echo "Warning: h264_nvenc encoder unavailable. Falling back to libx264."
+        NVENC_WARNED=1
+      fi
       ENCODER_ARGS="-c:v libx264 -preset veryfast"
     fi
 
@@ -152,32 +231,76 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
 
       start1=""; start2=""; start3=""
       if command -v python3 >/dev/null 2>&1 && [ -f "$SEGMENT_TRACKER" ]; then
-        start1=$(python3 "$SEGMENT_TRACKER" pick "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || echo "")
-        [ -z "$start1" ] || ! [ "$start1" -ge 0 ] 2>/dev/null || [ "$start1" -gt "$max_start" ] 2>/dev/null && start1=$(( RANDOM % (max_start + 1) ))
-        python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start1" "$(( start1 + clip_len ))" 2>/dev/null || true
-        start2=$(python3 "$SEGMENT_TRACKER" pick "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || echo "")
-        [ -z "$start2" ] || ! [ "$start2" -ge 0 ] 2>/dev/null || [ "$start2" -gt "$max_start" ] 2>/dev/null && start2=$(( RANDOM % (max_start + 1) ))
-        python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start2" "$(( start2 + clip_len ))" 2>/dev/null || true
-        start3=$(python3 "$SEGMENT_TRACKER" pick "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || echo "")
-        [ -z "$start3" ] || ! [ "$start3" -ge 0 ] 2>/dev/null || [ "$start3" -gt "$max_start" ] 2>/dev/null && start3=$(( RANDOM % (max_start + 1) ))
+        start1=$(python3 "$SEGMENT_TRACKER" pick_record "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || echo "")
+        if [ -z "$start1" ] || ! [ "$start1" -ge 0 ] 2>/dev/null || [ "$start1" -gt "$max_start" ] 2>/dev/null; then
+          start1=$(( RANDOM % (max_start + 1) ))
+          python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start1" "$(( start1 + clip_len ))" 2>/dev/null || true
+        fi
+        start2=$(python3 "$SEGMENT_TRACKER" pick_record "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || echo "")
+        if [ -z "$start2" ] || ! [ "$start2" -ge 0 ] 2>/dev/null || [ "$start2" -gt "$max_start" ] 2>/dev/null; then
+          start2=$(( RANDOM % (max_start + 1) ))
+          python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start2" "$(( start2 + clip_len ))" 2>/dev/null || true
+        fi
+        start3=$(python3 "$SEGMENT_TRACKER" pick_record "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || echo "")
+        if [ -z "$start3" ] || ! [ "$start3" -ge 0 ] 2>/dev/null || [ "$start3" -gt "$max_start" ] 2>/dev/null; then
+          start3=$(( RANDOM % (max_start + 1) ))
+          python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start3" "$(( start3 + clip_len ))" 2>/dev/null || true
+        fi
       else
         start1=$(( RANDOM % (start1_max + 1) ))
         start2=$(( start2_min + RANDOM % (start2_max - start2_min + 1) ))
         start3=$(( start3_min + RANDOM % (start3_max - start3_min + 1) ))
       fi
-      end1=$(( start1 + clip_len ))
-      end2=$(( start2 + clip_len ))
-      end3=$(( start3 + clip_len ))
 
-      W1="/tmp/wall_${idx}_1.mp4"
-      W2="/tmp/wall_${idx}_2.mp4"
-      W3="/tmp/wall_${idx}_3.mp4"
-      VF_PANEL="scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080,fps=30,format=yuv420p"
-      echo "  Panel 1/3..." && ffmpeg -hide_banner -y -ss "$start1" -i "$file" -t "$clip_len" -vf "$VF_PANEL" $ENCODER_ARGS -b:v 4000k -an -movflags +faststart -loglevel error "$W1" && \
-      echo "  Panel 2/3..." && ( ffmpeg -hide_banner -y -ss "$start2" -i "$file" -t "$clip_len" -vf "$VF_PANEL" $ENCODER_ARGS -b:v 4000k -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart -loglevel error "$W2" 2>/dev/null || ffmpeg -hide_banner -y -ss "$start2" -i "$file" -t "$clip_len" -vf "$VF_PANEL" $ENCODER_ARGS -b:v 4000k -an -movflags +faststart -loglevel error "$W2" ) && \
-      echo "  Panel 3/3..." && ffmpeg -hide_banner -y -ss "$start3" -i "$file" -t "$clip_len" -vf "$VF_PANEL" $ENCODER_ARGS -b:v 4000k -an -movflags +faststart -loglevel error "$W3" && \
-      echo "  Combining..." && \
-      ( if [ -n "$MODEL_LABEL" ]; then
+      # Build the wall in one pass, then apply a moody + subtle-psychedelic look.
+      VF_STACK="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[stacked];[stacked]split=2[orig][tmp];[tmp]gblur=sigma=6[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.08,eq=contrast=1.03:brightness=-0.022:saturation=1.09,curves=all='0/0 0.68/0.62 1/0.88',vignette=PI/13,hue=h=5,unsharp=5:5:0.24:5:5:0.0[outf]"
+      if [ -n "$MODEL_LABEL" ]; then
+        if [ "$HAS_DRAWTEXT" = "1" ]; then
+          echo "  Combining + drawtext..."
+          WM_LABEL=$(format_watermark_label "$MODEL_LABEL")
+          DT_TEXT=$(escape_drawtext_text "$WM_LABEL")
+          VF_STACK_WM="${VF_STACK};[outf]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${DT_TEXT}':fontsize=26:fontcolor=white:box=1:boxcolor=black@0.42:boxborderw=12:x=(640-tw)/2:y=h-th-24:shadowcolor=black@0.65:shadowx=2:shadowy=2[outwm]"
+          ffmpeg -hide_banner -y \
+            -ss "$start1" -i "$file" \
+            -ss "$start2" -i "$file" \
+            -ss "$start3" -i "$file" \
+            -t "$clip_len" \
+            -filter_complex "$VF_STACK_WM" -map "[outwm]" -map "1:a?" \
+            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+            -g 60 -keyint_min 60 \
+            -c:a aac -b:a 128k -ar 44100 -ac 2 \
+            -movflags +faststart -loglevel error "$tmp" || \
+          ffmpeg -hide_banner -y \
+            -ss "$start1" -i "$file" \
+            -ss "$start2" -i "$file" \
+            -ss "$start3" -i "$file" \
+            -t "$clip_len" \
+            -filter_complex "$VF_STACK_WM" -map "[outwm]" -an \
+            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+            -g 60 -keyint_min 60 \
+            -movflags +faststart -loglevel error "$tmp"
+        else
+          echo "  Combining + ASS watermark..."
+          XS_TMP="/tmp/xstack_pre_wm_${idx}.mp4"
+          ffmpeg -hide_banner -y \
+            -ss "$start1" -i "$file" \
+            -ss "$start2" -i "$file" \
+            -ss "$start3" -i "$file" \
+            -t "$clip_len" \
+            -filter_complex "$VF_STACK" -map "[outf]" -map "1:a?" \
+            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+            -g 60 -keyint_min 60 \
+            -c:a aac -b:a 128k -ar 44100 -ac 2 \
+            -movflags +faststart -loglevel error "$XS_TMP" || \
+          ffmpeg -hide_banner -y \
+            -ss "$start1" -i "$file" \
+            -ss "$start2" -i "$file" \
+            -ss "$start3" -i "$file" \
+            -t "$clip_len" \
+            -filter_complex "$VF_STACK" -map "[outf]" -an \
+            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+            -g 60 -keyint_min 60 \
+            -movflags +faststart -loglevel error "$XS_TMP"
           ASS_FILE="/tmp/watermark_${idx}.ass"
           safe_label=$(printf '%s' "$MODEL_LABEL" | python3 -c "import sys; t=sys.stdin.read().rstrip(); print(t.replace('\\\\','\\\\\\\\').replace('{','\\\\{').replace('}','\\\\}'));" 2>/dev/null || echo "$MODEL_LABEL")
           cat > "$ASS_FILE" << ASSEOF
@@ -187,53 +310,76 @@ PlayResY: 1080
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Watermark,DejaVu Sans,22,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,1,10,10,10,1
+Style: Watermark,DejaVu Sans,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,-1,0,0,0,100,100,0,0,3,1,1,1,16,16,16,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an1\pos(10,1000)}${safe_label}
+Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an2\pos(320,1068)\blur0.6\h\h}${safe_label}
 ASSEOF
-          VF_COMB="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[outv];[outv]subtitles=${ASS_FILE}[outf]"
-          MAP_V="[outf]"
-        else
-          VF_COMB="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[outf]"
-          MAP_V="[outf]"
+          ffmpeg -hide_banner -y -i "$XS_TMP" -vf "subtitles=${ASS_FILE}:fontsdir=/usr/share/fonts,format=yuv420p" -map 0:v -map 0:a? -c:v libx264 -preset veryfast -c:a copy -movflags +faststart -loglevel error "$tmp"
+          rm -f "$XS_TMP"
         fi
-        ffmpeg -hide_banner -y -i "$W1" -i "$W2" -i "$W3" -filter_complex "$VF_COMB" -map "$MAP_V" -map '1:a?' -c:v libx264 -preset veryfast -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart -loglevel error "$tmp" 2>/dev/null || \
-        ffmpeg -hide_banner -y -i "$W1" -i "$W2" -i "$W3" -filter_complex "$VF_COMB" -map "$MAP_V" -an -c:v libx264 -preset veryfast -movflags +faststart -loglevel error "$tmp"
-      ) && rm -f "$W1" "$W2" "$W3" && \
-      echo "file '$tmp'" >> "$CONCAT_LIST" && \
-      { [ -f "$SEGMENT_TRACKER" ] && python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start1" "$end1" 2>/dev/null; python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start2" "$end2" 2>/dev/null; python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start3" "$end3" 2>/dev/null; true; } && \
+      else
+        echo "  Combining..."
+        ffmpeg -hide_banner -y \
+          -ss "$start1" -i "$file" \
+          -ss "$start2" -i "$file" \
+          -ss "$start3" -i "$file" \
+          -t "$clip_len" \
+          -filter_complex "$VF_STACK" -map "[outf]" -map "1:a?" \
+          $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+          -g 60 -keyint_min 60 \
+          -c:a aac -b:a 128k -ar 44100 -ac 2 \
+          -movflags +faststart -loglevel error "$tmp" || \
+        ffmpeg -hide_banner -y \
+          -ss "$start1" -i "$file" \
+          -ss "$start2" -i "$file" \
+          -ss "$start3" -i "$file" \
+          -t "$clip_len" \
+          -filter_complex "$VF_STACK" -map "[outf]" -an \
+          $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+          -g 60 -keyint_min 60 \
+          -movflags +faststart -loglevel error "$tmp"
+      fi
+      [ -f "$tmp" ] && echo "file '$tmp'" >> "$CONCAT_LIST" && \
       { fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file"); [ -n "${VIDEO_HOST_PATH}" ] && fullpath="${fullpath//${VIDEO_DIR}\//${VIDEO_HOST_PATH%/}/}"; SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+
 }${fullpath}"; total=$(( total + clip_len )); idx=$(( idx + 1 )); echo "  Segment $idx: ${total}s / ${CHUNK_DURATION}s"; true; }
     else
       # Single-panel: center clip with pad (original behavior)
       start=""
       if command -v python3 >/dev/null 2>&1 && [ -f "$SEGMENT_TRACKER" ]; then
-        start=$(python3 "$SEGMENT_TRACKER" pick "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || true)
+        start=$(python3 "$SEGMENT_TRACKER" pick_record "$USED_SEGMENTS_JSON" "$file" "$dur" "$clip_len" 2>/dev/null || true)
       fi
       if [ -z "$start" ] || ! [ "$start" -ge 0 ] 2>/dev/null || [ "$start" -gt "$max_start" ] 2>/dev/null; then
         start=$(( RANDOM % (max_start + 1) ))
+        [ -f "$SEGMENT_TRACKER" ] && python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start" "$(( start + clip_len ))" 2>/dev/null || true
       fi
 
-      VF_BASE="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p"
+      # Single panel look: slightly moodier shadows, a bit more glow, subtle psychedelic hue shift.
+      VF_BASE="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,split=2[orig][tmp];[tmp]gblur=sigma=6[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.08,eq=contrast=1.03:brightness=-0.022:saturation=1.09,curves=all='0/0 0.68/0.62 1/0.88',vignette=PI/13,hue=h=5,unsharp=5:5:0.24:5:5:0.0"
       if [ -n "$MODEL_LABEL" ]; then
-        ASS_FILE="/tmp/watermark_${idx}.ass"
-        safe_label=$(printf '%s' "$MODEL_LABEL" | python3 -c "import sys; t=sys.stdin.read().rstrip(); print(t.replace('\\\\','\\\\\\\\').replace('{','\\\\{').replace('}','\\\\}'));" 2>/dev/null || echo "$MODEL_LABEL")
-        cat > "$ASS_FILE" << ASSEOF
+        if [ "$HAS_DRAWTEXT" = "1" ]; then
+          WM_LABEL=$(format_watermark_label "$MODEL_LABEL")
+          DT_TEXT=$(escape_drawtext_text "$WM_LABEL")
+          VF_BASE="${VF_BASE},drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${DT_TEXT}':fontsize=26:fontcolor=white:box=1:boxcolor=black@0.42:boxborderw=12:x=24:y=h-th-24:shadowcolor=black@0.65:shadowx=2:shadowy=2"
+        else
+          ASS_FILE="/tmp/watermark_${idx}.ass"
+          safe_label=$(printf '%s' "$MODEL_LABEL" | python3 -c "import sys; t=sys.stdin.read().rstrip(); print(t.replace('\\\\','\\\\\\\\').replace('{','\\\\{').replace('}','\\\\}'));" 2>/dev/null || echo "$MODEL_LABEL")
+          cat > "$ASS_FILE" << ASSEOF
 [Script Info]
 PlayResX: 1920
 PlayResY: 1080
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Watermark,DejaVu Sans,22,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,1,10,10,10,1
+Style: Watermark,DejaVu Sans,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,-1,0,0,0,100,100,0,0,3,1,1,1,16,16,16,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an1\pos(10,1000)}${safe_label}
+Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an1\pos(20,1068)\blur0.6\h\h}${safe_label}
 ASSEOF
-        VF_BASE="${VF_BASE},subtitles=${ASS_FILE}"
+          VF_BASE="${VF_BASE},subtitles=${ASS_FILE}:fontsdir=/usr/share/fonts,format=yuv420p"
+        fi
       fi
 
       ffmpeg -hide_banner -y -ss "$start" -i "$file" -t "$clip_len" \
@@ -244,7 +390,6 @@ ASSEOF
         -movflags +faststart \
         -loglevel error "$tmp" && \
       echo "file '$tmp'" >> "$CONCAT_LIST" && \
-      { [ -f "$SEGMENT_TRACKER" ] && python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start" "$(( start + clip_len ))" 2>/dev/null || true; } && \
       { fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file"); [ -n "${VIDEO_HOST_PATH}" ] && fullpath="${fullpath//${VIDEO_DIR}\//${VIDEO_HOST_PATH%/}/}"; SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+
 }${fullpath}"; total=$(( total + clip_len )); idx=$(( idx + 1 )); echo "  Segment $idx: ${total}s / ${CHUNK_DURATION}s"; true; }
     fi
@@ -322,7 +467,7 @@ print(json.dumps(sources))
   [ -f "$CHUNKS_CREATED_FILE" ] && count=$(cat "$CHUNKS_CREATED_FILE")
   echo $(( count + 1 )) > "$CHUNKS_CREATED_FILE"
 
-  rm -f /tmp/clip_*.mp4 /tmp/watermark_*.ass "$CONCAT_LIST"
+  rm -f /tmp/clip_*.mp4 /tmp/watermark_*.ass /tmp/xstack_pre_wm_*.mp4 "$CONCAT_LIST"
   chunk_elapsed=$(($(date +%s)-chunk_start))
   echo "Created: $CHUNK_NAME (total: ${chunk_elapsed}s)"
 done
