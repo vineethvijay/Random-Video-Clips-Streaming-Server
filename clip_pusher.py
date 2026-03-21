@@ -16,7 +16,8 @@ from typing import List, Optional
 STREAM_STATS_FILENAME = ".stream_stats.json"
 CHUNKS_CREATED_FILENAME = ".chunks_created_total"
 PLAY_COUNTS_FILENAME = ".play_counts.json"
-AUDIO_QUEUE_FILENAME = ".audio_queue.txt"
+# Legacy stats stored only chunk counts; convert to estimated seconds for fairness until real seconds accrue.
+LEGACY_CHUNK_SECONDS_ESTIMATE = 120.0
 
 # ── Output normalization ──────────────────────────────────────────
 OUTPUT_AUDIO_RATE    = 44100
@@ -65,7 +66,8 @@ class ClipPusher:
         self._streamer_process: Optional[subprocess.Popen] = None
         self._play_chunk_next: Optional[str] = None
         self._play_chunk_lock = threading.Lock()
-        self._audio_queue: List[str] = []
+        # When skip_to_next() runs, it already advances _audio_position; post-_stream_chunk must not add again.
+        self._audio_advance_done_for_this_chunk: bool = False
 
         self._load_stream_stats()
 
@@ -178,6 +180,32 @@ class ClipPusher:
         except OSError:
             pass
 
+    @staticmethod
+    def _coerce_audio_entry(raw) -> dict:
+        """Normalize audio stats to {\"seconds\": float, \"chunks\": int} (handles legacy int-only)."""
+        if raw is None:
+            return {'seconds': 0.0, 'chunks': 0}
+        if isinstance(raw, (int, float)):
+            c = max(0, int(raw))
+            return {'seconds': float(c) * LEGACY_CHUNK_SECONDS_ESTIMATE, 'chunks': c}
+        if isinstance(raw, dict):
+            sec = float(raw.get('seconds', 0) or 0)
+            ch = int(raw.get('chunks', 0) or 0)
+            if sec == 0 and ch == 0 and 'count' in raw:
+                c = max(0, int(raw.get('count', 0) or 0))
+                return {'seconds': float(c) * LEGACY_CHUNK_SECONDS_ESTIMATE, 'chunks': c}
+            return {'seconds': max(0.0, sec), 'chunks': max(0, ch)}
+        return {'seconds': 0.0, 'chunks': 0}
+
+    @staticmethod
+    def _format_audio_stream_time(sec: float) -> str:
+        s = int(round(max(0.0, sec)))
+        h, r = divmod(s, 3600)
+        m, s2 = divmod(r, 60)
+        if h:
+            return f'{h:d}:{m:02d}:{s2:02d}'
+        return f'{m:d}:{s2:02d}'
+
     def _extract_video_id(self, path: str) -> Optional[str]:
         """Extract 11-char YouTube video ID from path (e.g. .../UCxxx/abc123.mp4 -> abc123)."""
         stem = os.path.splitext(os.path.basename(path))[0]
@@ -185,8 +213,9 @@ class ClipPusher:
             return stem
         return None
 
-    def _record_play_count(self, chunk_path: str, audio_name: Optional[str]) -> None:
-        """Record play count for models (from chunk meta) and audio (current track)."""
+    def _record_play_count(self, chunk_path: str, audio_name: Optional[str],
+                           audio_streamed_sec: float = 0.0) -> None:
+        """Record play count for models (from chunk meta) and audio (seconds streamed this chunk + chunk count)."""
         data = self._load_play_counts()
         models = data.get('models', {})
         audio = data.get('audio', {})
@@ -222,7 +251,11 @@ class ClipPusher:
                 pass
 
         if audio_name:
-            audio[audio_name] = audio.get(audio_name, 0) + 1
+            prev = audio.get(audio_name, {'seconds': 0.0, 'chunks': 0})
+            entry = self._coerce_audio_entry(prev)
+            entry['seconds'] = entry['seconds'] + max(0.0, float(audio_streamed_sec))
+            entry['chunks'] = entry['chunks'] + 1
+            audio[audio_name] = entry
 
         data['models'] = models
         data['audio'] = audio
@@ -251,8 +284,17 @@ class ClipPusher:
 
         top_models = [(url, m['count'], m['video_id'], m['thumbnail_url']) for url, m in merged.items()]
         top_models.sort(key=lambda x: -x[1])
-        top_audio = sorted(audio.items(), key=lambda x: -x[1])
-        return {'models': top_models, 'audio': top_audio}
+        audio_rows = []
+        for name, raw in audio.items():
+            e = self._coerce_audio_entry(raw)
+            audio_rows.append({
+                'name': name,
+                'seconds': round(e['seconds'], 1),
+                'chunks': e['chunks'],
+                'time_display': self._format_audio_stream_time(e['seconds']),
+            })
+        audio_rows.sort(key=lambda x: -x['seconds'])
+        return {'models': top_models, 'audio': audio_rows}
 
     def get_status(self) -> dict:
         hours_played = round(self._total_seconds_streamed / 3600, 2) if self._total_seconds_streamed else 0
@@ -277,10 +319,13 @@ class ClipPusher:
     def skip_to_next(self) -> bool:
         """Stop the current chunk so the loop advances to the next one. Returns True if a stream was running."""
         if self._streamer_process and self._streamer_process.poll() is None:
-            # Advance audio position by how long this chunk actually played, so next chunk continues from there
+            # Advance audio position by how long this chunk actually played, so next chunk continues from there.
+            # Only set the flag when we applied it here — otherwise post-_stream_chunk still advances once.
+            self._audio_advance_done_for_this_chunk = False
             if self._current_chunk_started_at and self._persistent_audio_duration and self._persistent_audio_duration > 0:
                 actual = time.time() - self._current_chunk_started_at
                 self._audio_position = (self._audio_position + actual) % self._persistent_audio_duration
+                self._audio_advance_done_for_this_chunk = True
             try:
                 self._streamer_process.terminate()
                 self._streamer_process.wait(timeout=3)
@@ -296,20 +341,21 @@ class ClipPusher:
         if self._streamer_process and self._streamer_process.poll() is None:
             # Pre-select next audio before terminating so status/refresh shows it immediately
             if self._audio_files:
-                candidates = [f for f in self._audio_files if os.path.basename(f) != self._current_audio]
-                pool = candidates if candidates else self._audio_files
-                next_audio = random.choice(pool)
+                # Least-played among tracks other than current (fair rotation).
+                next_audio = self._get_next_audio(exclude_basename=self._current_audio)
                 self._persistent_audio_path = next_audio
-                self._current_audio = os.path.basename(next_audio)
                 self._audio_position = 0.0
-                try:
-                    out = subprocess.check_output(
-                        ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                         '-of', 'default=noprint_wrappers=1:nokey=1', next_audio]
-                    )
-                    self._persistent_audio_duration = float(out.decode('utf-8').strip())
-                except Exception:
-                    self._persistent_audio_duration = 3600.0
+                if self._persistent_audio_path:
+                    try:
+                        out = subprocess.check_output(
+                            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                             '-of', 'default=noprint_wrappers=1:nokey=1', self._persistent_audio_path]
+                        )
+                        self._persistent_audio_duration = float(out.decode('utf-8').strip())
+                    except Exception:
+                        self._persistent_audio_duration = 3600.0
+                else:
+                    self._persistent_audio_duration = None
             else:
                 self._persistent_audio_path = None
                 self._current_audio = None
@@ -368,59 +414,52 @@ class ClipPusher:
 
     # ── Internal ──────────────────────────────────────────────────
 
-    def _audio_queue_path(self) -> str:
-        return os.path.join(self._stats_dir, AUDIO_QUEUE_FILENAME)
+    def _audio_play_count(self, basename: str) -> float:
+        """Fairness weight = total seconds streamed (legacy int entries estimated as chunks * avg length)."""
+        data = self._load_play_counts()
+        audio = data.get('audio', {})
+        raw = audio.get(basename, 0)
+        return float(self._coerce_audio_entry(raw)['seconds'])
 
-    def _load_audio_queue(self) -> List[str]:
-        path = self._audio_queue_path()
-        if os.path.isfile(path):
-            try:
-                with open(path, 'r') as f:
-                    lines = [l.strip() for l in f if l.strip()]
-                valid = [p for p in lines if os.path.isfile(p)]
-                if valid:
-                    return valid
-            except OSError:
-                pass
-        return []
+    def _pick_audio_least_played(self, pool: List[str]) -> Optional[str]:
+        """Pick a file from pool with minimum recorded play count; random tie-break."""
+        if not pool:
+            return None
+        scores = [(self._audio_play_count(os.path.basename(p)), p) for p in pool]
+        min_score = min(s for s, _ in scores)
+        candidates = [p for s, p in scores if s == min_score]
+        chosen = random.choice(candidates)
+        self._current_audio = os.path.basename(chosen)
+        return chosen
 
-    def _save_audio_queue(self, queue: List[str]) -> None:
-        path = self._audio_queue_path()
+    def _get_next_audio(self, exclude_basename: Optional[str] = None) -> Optional[str]:
+        """Pick next track: least-played among library (or among pool excluding current)."""
+        if not self._audio_files:
+            return None
+        pool = [p for p in self._audio_files if os.path.basename(p) != exclude_basename]
+        if not pool:
+            pool = list(self._audio_files)
+        return self._pick_audio_least_played(pool)
+
+    def _rotate_audio_after_full_chunk_round(self) -> None:
+        """After playing a full shuffled pass (no push-chunk break), switch to another least-played track."""
+        if not self._audio_files:
+            return
+        cur = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
+        nxt = self._get_next_audio(exclude_basename=cur)
+        if not nxt:
+            return
+        self._persistent_audio_path = nxt
+        self._current_audio = os.path.basename(nxt)
+        self._audio_position = 0.0
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w') as f:
-                f.write('\n'.join(queue))
-        except OSError:
-            pass
-
-    def _get_next_audio(self) -> Optional[str]:
-        """Get next audio from LRU queue (take from head, move to tail). Ensures fair rotation."""
-        if not self._audio_files:
-            return None
-        if not self._audio_queue:
-            self._audio_queue = self._load_audio_queue()
-        valid = [p for p in self._audio_queue if os.path.isfile(p)]
-        new_files = [p for p in self._audio_files if p not in valid]
-        if not valid or new_files:
-            valid = list(valid) + new_files
-            random.shuffle(valid)
-        if not valid:
-            valid = list(self._audio_files)
-            random.shuffle(valid)
-        audio = valid.pop(0)
-        valid.append(audio)
-        self._audio_queue = valid
-        self._save_audio_queue(valid)
-        self._current_audio = os.path.basename(audio)
-        return audio
-
-    def _get_audio_file(self) -> Optional[str]:
-        """Get a random audio file (used by skip_to_next_audio)."""
-        if not self._audio_files:
-            return None
-        audio = random.choice(self._audio_files)
-        self._current_audio = os.path.basename(audio)
-        return audio
+            out = subprocess.check_output(
+                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', nxt]
+            )
+            self._persistent_audio_duration = float(out.decode('utf-8').strip())
+        except Exception:
+            self._persistent_audio_duration = 3600.0
 
     def _stream_chunk(self, chunk_path: str, audio_start_sec: float = 0.0):
         """
@@ -472,12 +511,15 @@ class ClipPusher:
         duration_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', chunk_path]
         try:
             chunk_duration = float(subprocess.check_output(duration_cmd).decode('utf-8').strip())
-            self._current_chunk_duration = chunk_duration
-            # Add a tiny buffer so it definitely reaches the end of the video
+            # Add a tiny buffer so it definitely reaches the end of the video.
+            # Important: we must advance _audio_position using the same duration we ask ffmpeg to run.
             chunk_duration += 0.5
+            self._current_chunk_duration = chunk_duration
         except Exception:
-            chunk_duration = 300  # Fallback 5 mins
-            self._current_chunk_duration = 300.0
+            # Fallback 5 mins (keep _current_chunk_duration consistent with ffmpeg -t)
+            chunk_duration = 300.0
+            chunk_duration += 0.5
+            self._current_chunk_duration = chunk_duration
 
         cmd.extend([
             '-c:v', 'copy',             # remux H264 natively, zero CPU!
@@ -542,10 +584,11 @@ class ClipPusher:
                         chunks.remove(full)
                         chunks.insert(0, full)
 
-            # Pick one audio track for the whole round (LRU queue for fair rotation when switching)
+            # Pick one audio track for this pass; rotate to another least-played track after a full round
+            # (not when user queued a chunk — that must keep the same track/position).
             if self._audio_files:
                 if self._persistent_audio_path is None or not os.path.isfile(self._persistent_audio_path):
-                    self._persistent_audio_path = self._get_next_audio()
+                    self._persistent_audio_path = self._get_next_audio(exclude_basename=None)
                     self._current_audio = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
                     self._audio_position = 0.0
                     if self._persistent_audio_path:
@@ -559,6 +602,7 @@ class ClipPusher:
                             self._persistent_audio_duration = 3600.0
                             print(f"Warning: ffprobe duration failed for {self._persistent_audio_path}: {e}. Using 3600s fallback.")
 
+            broke_for_queued_chunk = False
             for chunk in chunks:
                 if not self._running:
                     break
@@ -566,6 +610,7 @@ class ClipPusher:
                 self._current_chunk = os.path.basename(chunk)
                 self._current_chunk_started_at = time.time()
                 self._current_chunk_duration = None  # set in _stream_chunk after ffprobe
+                self._audio_advance_done_for_this_chunk = False
                 audio_start = self._audio_position
                 if audio_start > 0 and self._persistent_audio_duration:
                     print(f"Resuming audio at {audio_start:.1f}s / {self._persistent_audio_duration:.1f}s")
@@ -576,28 +621,38 @@ class ClipPusher:
                     self._errors += 1
                     print(f"Stream loop error: {exc}")
                     time.sleep(5)
-                # Advance by how much audio we actually output (chunk duration if it ran to completion, else wall clock)
-                if self._current_chunk_duration is not None and self._streamer_process and self._streamer_process.returncode == 0:
+                # Advance audio timeline. If skip_to_next() ran, it already updated _audio_position — do not add again.
+                skipped_audio_advance = self._audio_advance_done_for_this_chunk
+                if skipped_audio_advance:
+                    self._audio_advance_done_for_this_chunk = False
+                    advance = time.time() - self._current_chunk_started_at
+                elif self._current_chunk_duration is not None and self._streamer_process and self._streamer_process.returncode == 0:
                     advance = self._current_chunk_duration
                 else:
                     advance = time.time() - self._current_chunk_started_at
-                if self._persistent_audio_duration and self._persistent_audio_duration > 0:
+
+                if self._persistent_audio_duration and self._persistent_audio_duration > 0 and not skipped_audio_advance:
                     self._audio_position = (self._audio_position + advance) % self._persistent_audio_duration
+
                 self._total_seconds_streamed += advance
                 self._save_stream_stats()
-                self._record_play_count(chunk, self._current_audio)
+                self._record_play_count(chunk, self._current_audio, advance)
 
                 # Cleanup process before next iteration
                 if self._streamer_process and self._streamer_process.poll() is None:
                     self._streamer_process.terminate()
                     try:
                         self._streamer_process.wait(timeout=5)
-                    except:
+                    except Exception:
                         self._streamer_process.kill()
 
                 with self._play_chunk_lock:
                     if self._play_chunk_next:
+                        broke_for_queued_chunk = True
                         break
 
-        print("Clip pusher loop ended")
+            # Rotate track only after a full pass while still running (not mid-shutdown).
+            if not broke_for_queued_chunk and self._running and self._audio_files:
+                self._rotate_audio_after_full_chunk_round()
 
+        print("Clip pusher loop ended")
