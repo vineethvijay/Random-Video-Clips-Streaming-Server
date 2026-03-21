@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
@@ -9,6 +10,7 @@ import '../models/server_status.dart';
 import '../models/stream_status.dart';
 import '../services/streaming_api.dart';
 import '../widgets/dashboard_header.dart';
+import '../widgets/primary_meta_row.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.api});
@@ -26,6 +28,8 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Chunk> _chunks = <Chunk>[];
   List<AudioFile> _audioFiles = <AudioFile>[];
   String? _error;
+  /// Live HLS player errors (kept separate so API refresh never wipes them).
+  String? _videoError;
   bool _loading = true;
   bool _runningAction = false;
   Timer? _pollTimer;
@@ -44,7 +48,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (widget.api.config.enableLiveStream) {
       _videoController = VideoPlayerController.networkUrl(
         Uri.parse(widget.api.config.hlsUrl),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
+      _videoController!.addListener(_videoControllerListener);
       _initializeVideo();
     }
     _refreshData();
@@ -54,24 +60,72 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _videoControllerListener() {
+    final c = _videoController;
+    if (c == null || !mounted) {
+      return;
+    }
+    if (c.value.hasError) {
+      final msg = c.value.errorDescription;
+      setState(() {
+        _videoError = (msg != null && msg.isNotEmpty)
+            ? msg
+            : 'Playback error (check HLS URL and CORS if on web).';
+      });
+    }
+  }
+
   Future<void> _initializeVideo() async {
     final controller = _videoController;
     if (controller == null) {
       return;
     }
+    setState(() {
+      _videoError = null;
+    });
     try {
       await controller.initialize();
-      await controller.setLooping(true);
-      await controller.play();
-      if (mounted) {
-        setState(() {});
+      if (!mounted) {
+        return;
       }
-    } catch (_) {
+      await controller.setLooping(true);
+      try {
+        await controller.play();
+      } catch (e) {
+        if (kIsWeb) {
+          setState(() {
+            _videoError =
+                'Autoplay may be blocked — use the Play button below. ($e)';
+          });
+        }
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _videoError = null;
+      });
+    } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Could not initialize HLS player. Check HLS_URL and network access.';
+          _videoError =
+              'Could not load live stream. On web, ensure HLS is served with CORS and use http/https consistently.\n$e';
         });
       }
+    }
+  }
+
+  Future<void> _retryLiveVideo() async {
+    _videoController?.removeListener(_videoControllerListener);
+    await _videoController?.dispose();
+    _videoController = VideoPlayerController.networkUrl(
+      Uri.parse(widget.api.config.hlsUrl),
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+    );
+    _videoController!.addListener(_videoControllerListener);
+    await _initializeVideo();
+    if (mounted) {
+      setState(() {});
     }
   }
 
@@ -80,6 +134,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _pollTimer?.cancel();
     _chunkSearch.dispose();
     _audioSearch.dispose();
+    _videoController?.removeListener(_videoControllerListener);
     _videoController?.dispose();
     super.dispose();
   }
@@ -203,35 +258,35 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: const Color(0xFF0B1220),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: _loading && _streamStatus == null
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _refreshData,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
+              child: SelectionArea(
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
                   DashboardHeader(
                     title: 'Streaming Dashboard',
                     onRefresh: _loading ? null : _refreshData,
                   ),
-                  _sectionHeader('Overview'),
-                  _buildOverviewStrip(colors),
+                  _sectionHeader(context, 'Overview'),
+                  _buildOverviewStrip(context),
                   const SizedBox(height: 12),
                   _buildPlayerCard(),
                   const SizedBox(height: 12),
-                  _sectionHeader('Controls'),
+                  _sectionHeader(context, 'Controls'),
                   _buildActionsCard(),
                   const SizedBox(height: 12),
-                  _sectionHeader('Video Chunks'),
-                  _buildChunksToolbar(colors),
+                  _sectionHeader(context, 'Video Chunks'),
+                  _buildChunksToolbar(context),
                   const SizedBox(height: 12),
                   _buildChunksCard(),
                   const SizedBox(height: 12),
-                  _sectionHeader('Audio Library'),
-                  _buildAudioToolbar(colors),
+                  _sectionHeader(context, 'Audio Library'),
+                  _buildAudioToolbar(context),
                   const SizedBox(height: 12),
                   _buildAudioCard(),
                   if (_error != null) ...[
@@ -239,51 +294,61 @@ class _HomeScreenState extends State<HomeScreen> {
                     _buildErrorCard(_error!),
                   ],
                 ],
+                ),
               ),
             ),
     );
   }
 
-  Widget _sectionHeader(String title) {
-    return Text(
-      title,
-      style: const TextStyle(
-        color: Color(0xFFA5B4FC),
-        fontWeight: FontWeight.w700,
-        fontSize: 16,
+  Widget _sectionHeader(BuildContext context, String title) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Text(
+        title,
+        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              color: cs.primary,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.15,
+            ),
       ),
     );
   }
 
-  Widget _buildOverviewStrip(ColorScheme colors) {
+  Widget _buildOverviewStrip(BuildContext context) {
     return Wrap(
       spacing: 10,
       runSpacing: 10,
       children: [
-        _chip('Chunks', '${_chunks.length}'),
-        _chip('Audio files', '${_audioFiles.length}'),
-        _chip('Current chunk', _streamStatus?.currentChunk ?? '-'),
-        _chip('Current audio', _streamStatus?.currentAudio ?? '-'),
+        _chip(context, 'Chunks', '${_chunks.length}'),
+        _chip(context, 'Audio files', '${_audioFiles.length}'),
+        _chip(context, 'Current chunk', _streamStatus?.currentChunk ?? '-'),
+        _chip(context, 'Current audio', _streamStatus?.currentAudio ?? '-'),
       ],
     );
   }
 
-  Widget _chip(String label, String value) {
+  Widget _chip(BuildContext context, String label, String value) {
+    final cs = Theme.of(context).colorScheme;
+    final base = Theme.of(context).textTheme.bodyMedium;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF17233F),
+        color: cs.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF283A63)),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.4)),
       ),
       child: RichText(
         text: TextSpan(
-          style: const TextStyle(color: Colors.white70),
+          style: base?.copyWith(color: cs.onSurfaceVariant),
           children: [
             TextSpan(text: '$label: '),
             TextSpan(
               text: value,
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+              style: base?.copyWith(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ],
         ),
@@ -294,7 +359,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildPlayerCard() {
     if (!widget.api.config.enableLiveStream) {
       return Card(
-        color: const Color(0xFF111C36),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -302,10 +366,10 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               const Text('Live Stream', style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text('Disabled for now. Continue using the dashboard controls below.'),
+              const Text('Live stream player is off by default.'),
               const SizedBox(height: 6),
               Text(
-                'Set ENABLE_LIVE_STREAM=true to re-enable in builds.',
+                'Rebuild with ENABLE_LIVE_STREAM=true if you want the embedded HLS player.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -316,27 +380,99 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final controller = _videoController;
     final initialized = controller?.value.isInitialized ?? false;
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return Card(
-      color: const Color(0xFF111C36),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Live Stream', style: TextStyle(fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Live Stream', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                if (initialized)
+                  IconButton.filledTonal(
+                    tooltip: controller!.value.isPlaying ? 'Pause' : 'Play',
+                    onPressed: () async {
+                      if (controller.value.isPlaying) {
+                        await controller.pause();
+                      } else {
+                        await controller.play();
+                      }
+                      setState(() {});
+                    },
+                    icon: Icon(
+                      controller.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(height: 10),
+            if (_videoError != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: cs.errorContainer.withValues(alpha: 0.65),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  _videoError!,
+                  style: tt.bodySmall?.copyWith(color: cs.onErrorContainer),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: _retryLiveVideo,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Retry'),
+                  ),
+                  if (initialized && kIsWeb)
+                    FilledButton.icon(
+                      onPressed: () async {
+                        await controller?.play();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.play_circle_outline),
+                      label: const Text('Play'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             if (initialized)
               AspectRatio(
-                aspectRatio: controller!.value.aspectRatio,
+                aspectRatio: controller!.value.aspectRatio == 0
+                    ? 16 / 9
+                    : controller.value.aspectRatio,
                 child: VideoPlayer(controller),
               )
-            else
+            else if (_videoError == null)
               const AspectRatio(
                 aspectRatio: 16 / 9,
                 child: Center(child: CircularProgressIndicator()),
               ),
             const SizedBox(height: 8),
-            Text(widget.api.config.hlsUrl, style: Theme.of(context).textTheme.bodySmall),
+            SelectableText(
+              widget.api.config.hlsUrl,
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            if (kIsWeb)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Web uses HLS.js for .m3u8. The stream host must allow CORS for playlists and segments.',
+                  style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant),
+                ),
+              ),
           ],
         ),
       ),
@@ -345,7 +481,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildActionsCard() {
     return Card(
-      color: const Color(0xFF111C36),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Wrap(
@@ -368,10 +503,12 @@ class _HomeScreenState extends State<HomeScreen> {
               label: const Text('Generate Chunks'),
             ),
             if (_serverStatus?.generationInProgress == true)
-              const Chip(
-                label: Text('Generation in progress'),
-                backgroundColor: Color(0xFF4C1D1D),
-                labelStyle: TextStyle(color: Color(0xFFFCA5A5)),
+              Chip(
+                label: const Text('Generation in progress'),
+                backgroundColor: Theme.of(context).colorScheme.errorContainer,
+                labelStyle: TextStyle(
+                  color: Theme.of(context).colorScheme.onErrorContainer,
+                ),
               ),
           ],
         ),
@@ -379,9 +516,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildChunksToolbar(ColorScheme colors) {
+  Widget _buildChunksToolbar(BuildContext context) {
     return Card(
-      color: const Color(0xFF111C36),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Wrap(
@@ -393,11 +529,9 @@ class _HomeScreenState extends State<HomeScreen> {
               child: TextField(
                 controller: _chunkSearch,
                 onChanged: (_) => setState(() => _chunksPage = 1),
-                style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   isDense: true,
                   labelText: 'Search chunk filename',
-                  labelStyle: TextStyle(color: Colors.white70),
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -422,7 +556,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final page = _chunksPage.clamp(1, totalPages);
     final paged = _pageItems(visible, page, _chunksPerPage);
     return Card(
-      color: const Color(0xFF111C36),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -434,14 +567,12 @@ class _HomeScreenState extends State<HomeScreen> {
               const Text('No chunks found')
             else
               ...paged.map((chunk) {
-                return ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(chunk.name),
-                  subtitle: Text(
+                final meta =
                     '${chunk.createdAt} • ${chunk.sizeMb} MB'
-                    '${chunk.daysToExpire != null ? ' • expires in ${chunk.daysToExpire}d' : ''}',
-                  ),
+                    '${chunk.daysToExpire != null ? ' • expires in ${chunk.daysToExpire}d' : ''}';
+                return PrimaryMetaRow(
+                  primary: chunk.name,
+                  meta: meta,
                   trailing: TextButton(
                     onPressed: _runningAction
                         ? null
@@ -468,9 +599,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildAudioToolbar(ColorScheme colors) {
+  Widget _buildAudioToolbar(BuildContext context) {
     return Card(
-      color: const Color(0xFF111C36),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Wrap(
@@ -482,11 +612,9 @@ class _HomeScreenState extends State<HomeScreen> {
               child: TextField(
                 controller: _audioSearch,
                 onChanged: (_) => setState(() => _audioPage = 1),
-                style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   isDense: true,
                   labelText: 'Search audio filename',
-                  labelStyle: TextStyle(color: Colors.white70),
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -511,7 +639,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final page = _audioPage.clamp(1, totalPages);
     final paged = _pageItems(visible, page, _audioPerPage);
     return Card(
-      color: const Color(0xFF111C36),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -522,23 +649,29 @@ class _HomeScreenState extends State<HomeScreen> {
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1C2B4D),
+                  color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.55),
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFF3B82F6)),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.65),
+                  ),
                 ),
-                child: Text('Now playing: ${_streamStatus!.currentAudio}'),
+                child: Text(
+                  'Now playing: ${_streamStatus!.currentAudio}',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             if (visible.isEmpty)
               const Text('No audio files found')
             else
               ...paged.map((audio) {
-                final subtitle = '${audio.sizeMb} MB'
+                final meta = '${audio.sizeMb} MB'
                     '${audio.durationDisplay != null ? ' • ${audio.durationDisplay}' : ''}';
-                return ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(audio.name),
-                  subtitle: Text(subtitle),
+                return PrimaryMetaRow(
+                  primary: audio.name,
+                  meta: meta,
                   trailing: Wrap(
                     spacing: 4,
                     children: [

@@ -4,6 +4,7 @@ import '../models/stream_status.dart';
 import '../models/system_usage.dart';
 import '../services/streaming_api.dart';
 import '../widgets/dashboard_header.dart';
+import '../widgets/primary_meta_row.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key, required this.api});
@@ -116,9 +117,10 @@ class _AdminScreenState extends State<AdminScreen> {
     return Scaffold(
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
+          : SelectionArea(
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
                 DashboardHeader(
                   title: 'Admin',
                   onRefresh: _loading ? null : _load,
@@ -134,9 +136,13 @@ class _AdminScreenState extends State<AdminScreen> {
                 _systemInfoCard(),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
-                  Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+                  Text(
+                    _error!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
                 ],
-              ],
+                ],
+              ),
             ),
     );
   }
@@ -225,11 +231,10 @@ class _AdminScreenState extends State<AdminScreen> {
             else
               ..._cronEntries.take(8).map((e) {
                 final m = e as Map<String, dynamic>;
-                return ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text('${m['timestamp'] ?? '-'}'),
-                  trailing: Text('${m['trigger'] ?? 'cron'}'),
+                final trigger = '${m['trigger'] ?? 'cron'}';
+                return PrimaryMetaRow(
+                  primary: '${m['timestamp'] ?? '-'}',
+                  meta: 'Trigger: $trigger',
                 );
               }),
           ],
@@ -329,12 +334,26 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _kv(String k, String v) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 120, child: Text(k)),
-          Expanded(child: Text(v, style: const TextStyle(fontWeight: FontWeight.w600))),
+          SizedBox(
+            width: 120,
+            child: Text(
+              k,
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              v,
+              style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
         ],
       ),
     );

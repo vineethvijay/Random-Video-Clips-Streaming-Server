@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/streaming_api.dart';
 import '../widgets/dashboard_header.dart';
+import '../widgets/primary_meta_row.dart';
 
 class StatsScreen extends StatefulWidget {
   const StatsScreen({super.key, required this.api});
@@ -18,8 +20,11 @@ class _StatsScreenState extends State<StatsScreen> {
   String? _error;
   int _modelsPage = 1;
   int _audioPage = 1;
-  static const int _modelsPerPage = 12;
+  static const int _modelsPerPage = 20;
   static const int _audioPerPage = 12;
+  /// ½ of the HTML reference size (140×84); was ¼, then doubled.
+  static const double _modelThumbW = 140 / 2;
+  static const double _modelThumbH = 84 / 2;
 
   @override
   void initState() {
@@ -70,9 +75,10 @@ class _StatsScreenState extends State<StatsScreen> {
     return Scaffold(
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
+          : SelectionArea(
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
                 DashboardHeader(
                   title: 'Stats',
                   onRefresh: _loading ? null : _load,
@@ -105,17 +111,43 @@ class _StatsScreenState extends State<StatsScreen> {
                         if (models.isEmpty)
                           const Text('No model stats yet')
                         else
-                          ...modelsPageItems.map((m) {
-                            final mm = m as Map<String, dynamic>;
-                            return ListTile(
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
-                              title: Text('${mm['username'] ?? mm['url'] ?? '-'}'),
-                              subtitle: Text(
-                                  '${mm['platform'] ?? 'other'}${(mm['channel'] ?? '').toString().isNotEmpty ? ' • ${mm['channel']}' : ''}'),
-                              trailing: Text('${mm['count'] ?? 0}x'),
-                            );
-                          }),
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              const gap = 12.0;
+                              final leftCol = <Widget>[];
+                              final rightCol = <Widget>[];
+                              for (var i = 0; i < modelsPageItems.length; i++) {
+                                final mm = modelsPageItems[i] as Map<String, dynamic>;
+                                final tile = Padding(
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: _modelTile(context, mm),
+                                );
+                                if (i < 10) {
+                                  leftCol.add(tile);
+                                } else {
+                                  rightCol.add(tile);
+                                }
+                              }
+                              return Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                                      children: leftCol,
+                                    ),
+                                  ),
+                                  SizedBox(width: gap),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                                      children: rightCol,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
                         if (models.isNotEmpty)
                           _pager(
                             page: modelsPage,
@@ -146,12 +178,22 @@ class _StatsScreenState extends State<StatsScreen> {
                         else
                           ...audioPageItems.map((a) {
                             final aa = a as Map<String, dynamic>;
-                            return ListTile(
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
-                              title: Text('${aa['name'] ?? '-'}'),
-                              subtitle: Text('${aa['seconds'] ?? 0}s • ${aa['chunks'] ?? 0} chunks'),
-                              trailing: Text('${aa['time_display'] ?? '-'}'),
+                            final cs = Theme.of(context).colorScheme;
+                            final tt = Theme.of(context).textTheme;
+                            return PrimaryMetaRow(
+                              primary: '${aa['name'] ?? '-'}',
+                              meta:
+                                  '${aa['seconds'] ?? 0}s • ${aa['chunks'] ?? 0} chunks',
+                              trailing: Text(
+                                '${aa['time_display'] ?? '-'}',
+                                style: tt.labelMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: cs.onSurface,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              ),
                             );
                           }),
                         if (audio.isNotEmpty)
@@ -171,20 +213,203 @@ class _StatsScreenState extends State<StatsScreen> {
                 ),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
-                  Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+                  Text(
+                    _error!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
                 ],
               ],
             ),
+          ),
     );
   }
 
+  Widget _modelTile(BuildContext context, Map<String, dynamic> mm) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final imageUrl = mm['image'] as String?;
+    final url = mm['url'] as String?;
+    final yt = mm['yt'] as String?;
+    final channel = (mm['channel'] ?? '').toString();
+    final username = '${mm['username'] ?? mm['url'] ?? '-'}';
+    final platform = '${mm['platform'] ?? 'other'}';
+    final count = mm['count'] ?? 0;
+    final hasThumb = imageUrl != null && imageUrl.isNotEmpty;
+
+    Widget imageBlock = const SizedBox.shrink();
+    if (hasThumb) {
+      imageBlock = Container(
+        width: _modelThumbW,
+        height: _modelThumbH,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: cs.outline.withValues(alpha: 0.45)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Image.network(
+          imageUrl,
+          fit: BoxFit.cover,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) {
+              return child;
+            }
+            return Center(
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: cs.primary,
+                ),
+              ),
+            );
+          },
+          errorBuilder: (_, __, ___) => ColoredBox(
+            color: cs.surfaceContainerHighest,
+            child: Icon(Icons.broken_image_outlined, color: cs.onSurfaceVariant, size: 22),
+          ),
+        ),
+      );
+      if (url != null && url.isNotEmpty) {
+        imageBlock = Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _launchUrl(url),
+            child: imageBlock,
+          ),
+        );
+      }
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hasThumb) ...[
+          imageBlock,
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (channel.isNotEmpty) ...[
+                Text(
+                  channel,
+                  style: tt.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.15,
+                    color: cs.onSurface,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+              ],
+              if (url != null && url.isNotEmpty)
+                InkWell(
+                  onTap: () => _launchUrl(url),
+                  child: Text(
+                    username,
+                    style: channel.isNotEmpty
+                        ? tt.bodyMedium?.copyWith(
+                            color: cs.primary,
+                            fontWeight: FontWeight.w600,
+                          )
+                        : tt.titleSmall?.copyWith(
+                            color: cs.primary,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.1,
+                          ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                )
+              else
+                Text(
+                  username,
+                  style: tt.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.15,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              const SizedBox(height: 2),
+              Text(
+                platform,
+                style: tt.bodySmall?.copyWith(
+                  color: cs.onSurfaceVariant,
+                  height: 1.35,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (yt != null && yt.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                InkWell(
+                  onTap: () => _launchUrl(yt),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.play_circle_filled, size: 14, color: cs.error),
+                      const SizedBox(width: 4),
+                      Text(
+                        'YouTube',
+                        style: tt.labelSmall?.copyWith(color: cs.error, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          '${count}x',
+          style: tt.labelMedium?.copyWith(
+            color: cs.onSurfaceVariant,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _launchUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      return;
+    }
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open link')),
+      );
+    }
+  }
+
   Widget _kv(String k, String v) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 130, child: Text(k)),
-          Expanded(child: Text(v, style: const TextStyle(fontWeight: FontWeight.w600))),
+          SizedBox(
+            width: 130,
+            child: Text(
+              k,
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              v,
+              style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
         ],
       ),
     );

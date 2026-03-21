@@ -5,6 +5,7 @@ import 'src/screens/admin_screen.dart';
 import 'src/screens/home_screen.dart';
 import 'src/screens/stats_screen.dart';
 import 'src/services/streaming_api.dart';
+import 'src/theme/app_theme.dart';
 
 void main() {
   final api = StreamingApi.fromEnvironment();
@@ -28,28 +29,8 @@ class RandomVideoStreamerApp extends StatelessWidget {
 
     return MaterialApp.router(
       routerConfig: router,
-      builder: (context, child) {
-        return SelectionArea(
-          child: child ?? const SizedBox.shrink(),
-        );
-      },
       title: 'Random Video Streamer',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF6366F1),
-          brightness: Brightness.dark,
-        ),
-        scaffoldBackgroundColor: const Color(0xFF0B1220),
-        cardTheme: CardThemeData(
-          color: const Color(0xFF111C36),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: Color(0xFF273B66)),
-          ),
-        ),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.dark(),
     );
   }
 }
