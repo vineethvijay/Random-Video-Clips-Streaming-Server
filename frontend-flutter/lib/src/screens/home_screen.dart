@@ -328,41 +328,107 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── BUILD ──
 
+  int _navIndex = 0;
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      body: _loading && _streamStatus == null
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _refreshData,
-              child: SelectionArea(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  children: [
-                    _buildHeader(context),
+    Widget? body;
+    if (_loading && _streamStatus == null) {
+      body = const Center(child: CircularProgressIndicator());
+    } else {
+      switch (_navIndex) {
+        case 0:
+          body = RefreshIndicator(
+            onRefresh: _refreshData,
+            child: SelectionArea(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                children: [
+                  _buildHeader(context),
+                  const SizedBox(height: 16),
+                  _buildOverviewStrip(context),
+                  const SizedBox(height: 16),
+                  _buildPlayerCard(context),
+                  if (_error != null) ...[
                     const SizedBox(height: 16),
-                    _buildOverviewStrip(context),
-                    const SizedBox(height: 16),
-                    _buildPlayerCard(context),
-                    const SizedBox(height: 20),
-                    _buildChunksSection(context),
-                    const SizedBox(height: 20),
-                    _buildAudioSection(context),
-                    if (_error != null) ...[
-                      const SizedBox(height: 16),
-                      _buildErrorCard(context, _error!),
-                    ],
+                    _buildErrorCard(context, _error!),
                   ],
-                ),
+                ],
               ),
             ),
+          );
+          break;
+        case 1:
+          body = RefreshIndicator(
+            onRefresh: _refreshData,
+            child: SelectionArea(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                children: [
+                  _buildHeader(context, title: 'Video Chunks'),
+                  const SizedBox(height: 16),
+                  _buildChunksSection(context),
+                  if (_error != null) ...[
+                    const SizedBox(height: 16),
+                    _buildErrorCard(context, _error!),
+                  ],
+                ],
+              ),
+            ),
+          );
+          break;
+        case 2:
+          body = RefreshIndicator(
+            onRefresh: _refreshData,
+            child: SelectionArea(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                children: [
+                  _buildHeader(context, title: 'Audio Library'),
+                  const SizedBox(height: 16),
+                  _buildAudioSection(context),
+                  if (_error != null) ...[
+                    const SizedBox(height: 16),
+                    _buildErrorCard(context, _error!),
+                  ],
+                ],
+              ),
+            ),
+          );
+          break;
+      }
+    }
+
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      body: SafeArea(child: body!),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _navIndex,
+        onDestinationSelected: (v) => setState(() => _navIndex = v),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard_rounded),
+            label: 'Dashboard',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.video_library_outlined),
+            selectedIcon: Icon(Icons.video_library_rounded),
+            label: 'Videos',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.library_music_outlined),
+            selectedIcon: Icon(Icons.library_music_rounded),
+            label: 'Audio',
+          ),
+        ],
+      ),
     );
   }
 
   // ── Header ──
 
-  Widget _buildHeader(BuildContext context) {
+  Widget _buildHeader(BuildContext context, {String title = 'Streaming Dashboard'}) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
     return Row(
@@ -381,7 +447,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Text('Streaming Dashboard',
+          child: Text(title,
               style: tt.titleLarge
                   ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.5)),
         ),
@@ -557,7 +623,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       aspectRatio: controller!.value.aspectRatio == 0
                           ? 16 / 9
                           : controller.value.aspectRatio,
-                      child: VideoPlayer(controller),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          VideoPlayer(controller),
+                          Positioned.fill(
+                            child: Container(color: Colors.transparent),
+                          ),
+                        ],
+                      ),
                     ),
                   )
                 else if (_videoError == null)
@@ -597,7 +671,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           iconSize: 20,
                         ),
-                        Expanded(
+                        SizedBox(
+                          width: 120,
                           child: SliderTheme(
                             data: SliderThemeData(
                               trackHeight: 3,
