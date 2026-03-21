@@ -87,7 +87,6 @@ services:
       - /var/spool/cron/crontabs:/host-crontab:rw
       - ./.env:/app/.env
       - ./backend/app.py:/app/app.py:ro
-      - ./frontend-html/templates:/app/templates:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TZ=${TZ:-Europe/Amsterdam}

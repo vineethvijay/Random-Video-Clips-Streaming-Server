@@ -25,58 +25,57 @@ It now has separate route-based pages:
 - Backend server running and reachable from your device/emulator/browser
 - Docker installed
 
-## Docker builds (recommended)
+## Flutter Web and Android Builds (Recommended)
 
-From repo root:
+To simplify building and deploying across local or Proxmox environments, we use a single unified deployment manager: `scripts/build-deploy-flutter.sh`. By default, it uses Docker, so you do not even need Flutter installed!
 
-### Build web
+Before building, configure your IPs/URLs inside `scripts/flutter_config.env`.
 
-```bash
-scripts/flutter-web-build-docker.sh \
-  http://<server-ip>:8081 \
-  http://<server-ip>:8082/hls/stream.m3u8
-```
-
-Output:
-
-- `frontend-flutter/build/web`
-
-### Build Android APK
+### Interactive Mode (Simplest)
+If you just run the script with no arguments, it provides a simple menu to choose what you want to do:
 
 ```bash
-scripts/flutter-android-build-docker.sh \
-  apk \
-  http://<server-ip>:8081 \
-  http://<server-ip>:8082/hls/stream.m3u8
+cd scripts/
+./build-deploy-flutter.sh
 ```
 
-Output:
+### Scripted Mode
+You can also bypass the menu by providing arguments. 
+Available environments defined in `flutter_config.env`: `local`, `proxmox`.
 
-- `frontend-flutter/dist/android/random-video-streamer-release.apk`
-
-### Build Android App Bundle (Play Store)
-
+**Build Web (Local Environment):**
 ```bash
-scripts/flutter-android-build-docker.sh \
-  aab \
-  http://<server-ip>:8081 \
-  http://<server-ip>:8082/hls/stream.m3u8
+scripts/build-deploy-flutter.sh --env local --target web
 ```
 
-Output:
-
-- `frontend-flutter/dist/android/random-video-streamer-release.aab`
-
-Both scripts run `flutter create --platforms=android,web .` inside Docker, so platform folders are generated without local Flutter.
-
-Live stream toggle (default is **off**; set `true` to embed the player):
-
+**Build Android APK (Proxmox production environment variables):**
 ```bash
-ENABLE_LIVE_STREAM=true scripts/flutter-web-build-docker.sh
-ENABLE_LIVE_STREAM=true scripts/flutter-android-build-docker.sh apk
+scripts/build-deploy-flutter.sh --env proxmox --target apk
 ```
 
-## Local Flutter run (optional)
+**Build Web and Serve Locally for Preview:**
+```bash
+scripts/build-deploy-flutter.sh --env local --target web --serve
+```
+
+**Build Web and Deploy to Proxmox Directly:**
+```bash
+scripts/build-deploy-flutter.sh --env proxmox --target web --deploy
+```
+
+**Build Locally Instead of using Docker:**
+```bash
+scripts/build-deploy-flutter.sh --env local --target apk --engine local
+```
+
+The compiled outputs will be saved to:
+- Web: `frontend-flutter/build/web`
+- APK: `frontend-flutter/dist/android/random-video-streamer-release.apk`
+- AAB: `frontend-flutter/dist/android/random-video-streamer-release.aab`
+
+### Local Flutter run (development)
+
+If you just want to run the app natively for active code development without compiling release packages:
 
 ```bash
 cd frontend-flutter
@@ -87,7 +86,7 @@ flutter run \
   --dart-define=ENABLE_LIVE_STREAM=false
 ```
 
-Optional:
+Optional arguments:
 
 ```bash
 --dart-define=REFRESH_SECONDS=5
