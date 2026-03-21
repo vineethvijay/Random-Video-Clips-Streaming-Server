@@ -558,6 +558,12 @@ def admin():
     return render_template('admin.html', **ctx)
 
 
+@app.route('/api/admin-context')
+def api_admin_context():
+    """Admin data for API clients."""
+    return jsonify(_admin_context())
+
+
 def _fetch_og_meta(url: str, timeout: float = 5.0) -> dict:
     """Fetch og:title and og:image from URL. Returns {title, image} or empty dict on failure."""
     if not url or not url.startswith(('http://', 'https://')):
@@ -724,6 +730,9 @@ def _stats_context():
         'chunks_created_total': current_status.get('chunks_created_total'),
         'total_seconds_streamed': current_status.get('total_seconds_streamed'),
     }
+    if not hasattr(clip_pusher, 'get_play_counts'):
+        return {'stream_stats': stream_stats, 'play_counts': {'models': [], 'audio': []}}
+
     play_counts = clip_pusher.get_play_counts()
     models_enriched = []
     for item in play_counts.get('models', []):
@@ -752,6 +761,12 @@ def stats():
     """Stats page: Stream stats, top models, top audio by play count"""
     ctx = _stats_context()
     return render_template('stats.html', **ctx)
+
+
+@app.route('/api/stats')
+def api_stats():
+    """Stats data for API clients."""
+    return jsonify(_stats_context())
 
 
 def _stream_url():
@@ -828,6 +843,21 @@ def api_chunks():
     limit = min(100, max(1, int(request.args.get('limit', 20))))
     page_chunks = chunks[offset:offset + limit]
     return jsonify({'chunks': page_chunks, 'total': len(chunks)})
+
+
+@app.route('/api/audio')
+def api_audio():
+    """Get audio files with optional pagination (offset, limit)."""
+    audio_files = []
+    audio_extensions = ('.mp3', '.aac', '.flac', '.ogg', '.wav', '.m4a')
+    if AUDIO_FOLDER and os.path.isdir(AUDIO_FOLDER):
+        audio_files = _audio_files_with_durations(audio_extensions, AUDIO_FOLDER)
+
+    offset = max(0, int(request.args.get('offset', 0)))
+    limit = min(200, max(1, int(request.args.get('limit', 50))))
+    page_audio = audio_files[offset:offset + limit]
+    current_audio = clip_pusher.get_status().get('current_audio')
+    return jsonify({'audio_files': page_audio, 'total': len(audio_files), 'current_audio': current_audio})
 
 
 @app.route('/api/cron-run-history')
