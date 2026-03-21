@@ -2,6 +2,12 @@
 
 This is a starter Flutter app for controlling and monitoring the Random Video Clips Streaming Server.
 
+It now has separate route-based pages:
+
+- `/#/` Dashboard
+- `/#/admin` Admin
+- `/#/stats` Stats
+
 ## What is implemented
 
 - Live HLS player (`video_player`) - currently disabled by default

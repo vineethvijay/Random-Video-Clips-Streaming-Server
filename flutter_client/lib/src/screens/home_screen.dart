@@ -7,8 +7,8 @@ import '../models/audio_file.dart';
 import '../models/chunk.dart';
 import '../models/server_status.dart';
 import '../models/stream_status.dart';
-import '../models/system_usage.dart';
 import '../services/streaming_api.dart';
+import '../widgets/dashboard_header.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.api});
@@ -22,7 +22,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   VideoPlayerController? _videoController;
   StreamStatus? _streamStatus;
-  SystemUsage? _systemUsage;
   ServerStatus? _serverStatus;
   List<Chunk> _chunks = <Chunk>[];
   List<AudioFile> _audioFiles = <AudioFile>[];
@@ -34,6 +33,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _audioSearch = TextEditingController();
   bool _chunksNewestFirst = true;
   bool _audioLongestFirst = true;
+  int _chunksPage = 1;
+  int _audioPage = 1;
+  static const int _chunksPerPage = 8;
+  static const int _audioPerPage = 8;
 
   @override
   void initState() {
@@ -92,7 +95,6 @@ class _HomeScreenState extends State<HomeScreen> {
       String? warning;
       final streamStatus = await widget.api.getStreamStatus();
       ServerStatus? serverStatus;
-      SystemUsage? systemUsage;
       List<Chunk> chunks = <Chunk>[];
       List<AudioFile> audioFiles = <AudioFile>[];
 
@@ -100,11 +102,6 @@ class _HomeScreenState extends State<HomeScreen> {
         serverStatus = await widget.api.getServerStatus();
       } catch (_) {
         warning = 'Could not load server status.';
-      }
-      try {
-        systemUsage = await widget.api.getSystemUsage();
-      } catch (_) {
-        warning = warning ?? 'Could not load system usage.';
       }
       try {
         chunks = await widget.api.getChunks(limit: 200);
@@ -123,9 +120,10 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _streamStatus = streamStatus;
         _serverStatus = serverStatus ?? _serverStatus;
-        _systemUsage = systemUsage ?? _systemUsage;
         _chunks = chunks;
         _audioFiles = audioFiles;
+        _chunksPage = 1;
+        _audioPage = 1;
         _loading = false;
         _error = warning;
       });
@@ -195,21 +193,19 @@ class _HomeScreenState extends State<HomeScreen> {
     return out;
   }
 
+  List<T> _pageItems<T>(List<T> items, int page, int perPage) {
+    if (items.isEmpty) return <T>[];
+    final start = (page - 1) * perPage;
+    if (start >= items.length || start < 0) return <T>[];
+    final end = (start + perPage).clamp(0, items.length);
+    return items.sublist(start, end);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return Scaffold(
       backgroundColor: const Color(0xFF0B1220),
-      appBar: AppBar(
-          backgroundColor: const Color(0xFF101A31),
-          foregroundColor: Colors.white,
-          title: const Text('Streaming Dashboard'),
-          actions: [
-            IconButton(
-              onPressed: _loading ? null : _refreshData,
-              icon: const Icon(Icons.refresh),
-            ),
-          ]),
       body: _loading && _streamStatus == null
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -217,6 +213,10 @@ class _HomeScreenState extends State<HomeScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  DashboardHeader(
+                    title: 'Streaming Dashboard',
+                    onRefresh: _loading ? null : _refreshData,
+                  ),
                   _sectionHeader('Overview'),
                   _buildOverviewStrip(colors),
                   const SizedBox(height: 12),
@@ -224,9 +224,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 12),
                   _sectionHeader('Controls'),
                   _buildActionsCard(),
-                  const SizedBox(height: 12),
-                  _sectionHeader('Live Status'),
-                  _buildStatusCard(colors),
                   const SizedBox(height: 12),
                   _sectionHeader('Video Chunks'),
                   _buildChunksToolbar(colors),
@@ -382,32 +379,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStatusCard(ColorScheme colors) {
-    final stream = _streamStatus;
-    final usage = _systemUsage;
-    return Card(
-      color: const Color(0xFF111C36),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Server Status', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            _kv('Current chunk', stream?.currentChunk ?? '-'),
-            _kv('Current audio', stream?.currentAudio ?? '-'),
-            _kv('Chunks pushed', '${stream?.chunksPushed ?? 0}'),
-            _kv('Chunks created', '${stream?.chunksCreatedTotal ?? 0}'),
-            const SizedBox(height: 8),
-            _kv('CPU', _toPercent(usage?.cpuPercent)),
-            _kv('Memory', _toPercent(usage?.memPercent)),
-            _kv('GPU', _toPercent(usage?.gpuPercent)),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildChunksToolbar(ColorScheme colors) {
     return Card(
       color: const Color(0xFF111C36),
@@ -421,7 +392,7 @@ class _HomeScreenState extends State<HomeScreen> {
               width: 260,
               child: TextField(
                 controller: _chunkSearch,
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) => setState(() => _chunksPage = 1),
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   isDense: true,
@@ -434,7 +405,10 @@ class _HomeScreenState extends State<HomeScreen> {
             FilterChip(
               selected: _chunksNewestFirst,
               label: Text(_chunksNewestFirst ? 'Newest first' : 'Oldest first'),
-              onSelected: (_) => setState(() => _chunksNewestFirst = !_chunksNewestFirst),
+              onSelected: (_) => setState(() {
+                _chunksNewestFirst = !_chunksNewestFirst;
+                _chunksPage = 1;
+              }),
             ),
           ],
         ),
@@ -443,6 +417,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildChunksCard() {
+    final visible = _visibleChunks;
+    final totalPages = visible.isEmpty ? 1 : (visible.length / _chunksPerPage).ceil();
+    final page = _chunksPage.clamp(1, totalPages);
+    final paged = _pageItems(visible, page, _chunksPerPage);
     return Card(
       color: const Color(0xFF111C36),
       child: Padding(
@@ -452,10 +430,10 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             const Text('Recent Chunks', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            if (_visibleChunks.isEmpty)
+            if (visible.isEmpty)
               const Text('No chunks found')
             else
-              ..._visibleChunks.take(40).map((chunk) {
+              ...paged.map((chunk) {
                 return ListTile(
                   dense: true,
                   contentPadding: EdgeInsets.zero,
@@ -475,6 +453,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 );
               }),
+            if (visible.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              _buildPager(
+                page: page,
+                totalPages: totalPages,
+                onPrev: page > 1 ? () => setState(() => _chunksPage = page - 1) : null,
+                onNext: page < totalPages ? () => setState(() => _chunksPage = page + 1) : null,
+              ),
+            ],
           ],
         ),
       ),
@@ -494,7 +481,7 @@ class _HomeScreenState extends State<HomeScreen> {
               width: 260,
               child: TextField(
                 controller: _audioSearch,
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) => setState(() => _audioPage = 1),
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   isDense: true,
@@ -507,7 +494,10 @@ class _HomeScreenState extends State<HomeScreen> {
             FilterChip(
               selected: _audioLongestFirst,
               label: Text(_audioLongestFirst ? 'Longest first' : 'Shortest first'),
-              onSelected: (_) => setState(() => _audioLongestFirst = !_audioLongestFirst),
+              onSelected: (_) => setState(() {
+                _audioLongestFirst = !_audioLongestFirst;
+                _audioPage = 1;
+              }),
             ),
           ],
         ),
@@ -516,6 +506,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildAudioCard() {
+    final visible = _visibleAudio;
+    final totalPages = visible.isEmpty ? 1 : (visible.length / _audioPerPage).ceil();
+    final page = _audioPage.clamp(1, totalPages);
+    final paged = _pageItems(visible, page, _audioPerPage);
     return Card(
       color: const Color(0xFF111C36),
       child: Padding(
@@ -534,10 +528,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 child: Text('Now playing: ${_streamStatus!.currentAudio}'),
               ),
-            if (_visibleAudio.isEmpty)
+            if (visible.isEmpty)
               const Text('No audio files found')
             else
-              ..._visibleAudio.take(40).map((audio) {
+              ...paged.map((audio) {
                 final subtitle = '${audio.sizeMb} MB'
                     '${audio.durationDisplay != null ? ' • ${audio.durationDisplay}' : ''}';
                 return ListTile(
@@ -570,9 +564,35 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 );
               }),
+            if (visible.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              _buildPager(
+                page: page,
+                totalPages: totalPages,
+                onPrev: page > 1 ? () => setState(() => _audioPage = page - 1) : null,
+                onNext: page < totalPages ? () => setState(() => _audioPage = page + 1) : null,
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildPager({
+    required int page,
+    required int totalPages,
+    required VoidCallback? onPrev,
+    required VoidCallback? onNext,
+  }) {
+    return Row(
+      children: [
+        OutlinedButton(onPressed: onPrev, child: const Text('Prev')),
+        const SizedBox(width: 10),
+        Text('Page $page of $totalPages'),
+        const SizedBox(width: 10),
+        OutlinedButton(onPressed: onNext, child: const Text('Next')),
+      ],
     );
   }
 
@@ -586,22 +606,4 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _kv(String key, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          SizedBox(width: 130, child: Text(key)),
-          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w600))),
-        ],
-      ),
-    );
-  }
-
-  String _toPercent(num? value) {
-    if (value == null) {
-      return '-';
-    }
-    return '${value.toStringAsFixed(1)}%';
-  }
 }

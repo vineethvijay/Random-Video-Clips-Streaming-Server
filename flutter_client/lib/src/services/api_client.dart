@@ -51,9 +51,27 @@ class ApiClient {
   }
 
   Map<String, dynamic> _decodeResponse(http.Response response) {
+    final url = response.request?.url.toString() ?? '<unknown-url>';
+
+    String compatibilityHint() {
+      if (response.statusCode == 404 && url.contains('/api/audio')) {
+        return 'Endpoint /api/audio not found on server. Deploy latest backend app.py to your server.';
+      }
+      if (response.statusCode == 404 && url.contains('/api/stats')) {
+        return 'Endpoint /api/stats not found on server. Deploy latest backend app.py to your server.';
+      }
+      if (response.statusCode == 404 && url.contains('/api/admin-context')) {
+        return 'Endpoint /api/admin-context not found on server. Deploy latest backend app.py to your server.';
+      }
+      return '';
+    }
+
     if (response.body.isEmpty) {
       if (response.statusCode >= 400) {
-        throw Exception('Request failed: ${response.statusCode}');
+        final hint = compatibilityHint();
+        throw Exception(
+          hint.isNotEmpty ? hint : 'Request failed: ${response.statusCode} for $url',
+        );
       }
       return <String, dynamic>{};
     }
@@ -65,7 +83,10 @@ class ApiClient {
       final snippet = response.body.length > 160
           ? '${response.body.substring(0, 160)}...'
           : response.body;
-      final url = response.request?.url.toString() ?? '<unknown-url>';
+      final hint = compatibilityHint();
+      if (hint.isNotEmpty) {
+        throw Exception(hint);
+      }
       throw Exception(
         'Expected JSON but received non-JSON from $url '
         '(status ${response.statusCode}). Response starts with: $snippet',

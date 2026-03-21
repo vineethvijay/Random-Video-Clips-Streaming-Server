@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../models/stream_status.dart';
+import '../models/system_usage.dart';
 import '../services/streaming_api.dart';
+import '../widgets/dashboard_header.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key, required this.api});
@@ -14,6 +17,8 @@ class AdminScreen extends StatefulWidget {
 class _AdminScreenState extends State<AdminScreen> {
   Map<String, dynamic>? _ctx;
   List<dynamic> _cronEntries = <dynamic>[];
+  StreamStatus? _streamStatus;
+  SystemUsage? _systemUsage;
   bool _generationInProgress = false;
   bool _loading = true;
   bool _busy = false;
@@ -56,10 +61,14 @@ class _AdminScreenState extends State<AdminScreen> {
         widget.api.getAdminContext(),
         widget.api.getCronHistory(page: 1, perPage: 20),
         widget.api.getServerStatus(),
+        widget.api.getStreamStatus(),
+        widget.api.getSystemUsage(),
       ]);
       final ctx = results[0] as Map<String, dynamic>;
       final cron = results[1] as Map<String, dynamic>;
       final status = results[2] as dynamic;
+      final streamStatus = results[3] as StreamStatus;
+      final systemUsage = results[4] as SystemUsage;
 
       final settings = (ctx['settings'] as Map<String, dynamic>? ?? <String, dynamic>{});
       for (final key in _editableKeys) {
@@ -72,6 +81,8 @@ class _AdminScreenState extends State<AdminScreen> {
       setState(() {
         _ctx = ctx;
         _cronEntries = cron['entries'] as List<dynamic>? ?? <dynamic>[];
+        _streamStatus = streamStatus;
+        _systemUsage = systemUsage;
         _generationInProgress = status.generationInProgress == true;
         _loading = false;
       });
@@ -103,18 +114,18 @@ class _AdminScreenState extends State<AdminScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Admin'),
-        actions: [
-          IconButton(onPressed: _loading ? null : _load, icon: const Icon(Icons.refresh)),
-        ],
-      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                DashboardHeader(
+                  title: 'Admin',
+                  onRefresh: _loading ? null : _load,
+                ),
                 _actionsCard(),
+                const SizedBox(height: 12),
+                _liveStatusCard(),
                 const SizedBox(height: 12),
                 _cronCard(),
                 const SizedBox(height: 12),
@@ -227,6 +238,33 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  Widget _liveStatusCard() {
+    final stream = _streamStatus;
+    final usage = _systemUsage;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Live Status', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            const Text('Server Status', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            _kv('Current chunk', stream?.currentChunk ?? '-'),
+            _kv('Current audio', stream?.currentAudio ?? '-'),
+            _kv('Chunks pushed', '${stream?.chunksPushed ?? 0}'),
+            _kv('Chunks created', '${stream?.chunksCreatedTotal ?? 0}'),
+            const SizedBox(height: 8),
+            _kv('CPU', _toPercent(usage?.cpuPercent)),
+            _kv('Memory', _toPercent(usage?.memPercent)),
+            _kv('GPU', _toPercent(usage?.gpuPercent)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _settingsCard() {
     return Card(
       child: Padding(
@@ -300,5 +338,10 @@ class _AdminScreenState extends State<AdminScreen> {
         ],
       ),
     );
+  }
+
+  String _toPercent(num? value) {
+    if (value == null) return '-';
+    return '${value.toStringAsFixed(1)}%';
   }
 }

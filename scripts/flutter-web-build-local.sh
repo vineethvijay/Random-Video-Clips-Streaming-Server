@@ -8,6 +8,17 @@ set -euo pipefail
 DEFAULT_HOST="localhost"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/flutter_client"
+FLUTTER_BIN="${FLUTTER_BIN:-/Users/vineeth/flutter/flutter/bin}"
+
+if [[ -x "$FLUTTER_BIN/flutter" ]]; then
+  export PATH="$FLUTTER_BIN:$PATH"
+fi
+
+if ! command -v flutter >/dev/null 2>&1; then
+  echo "flutter not found. Set FLUTTER_BIN or add flutter to PATH."
+  echo "Current FLUTTER_BIN: $FLUTTER_BIN"
+  exit 1
+fi
 
 API_BASE_URL="${1:-http://$DEFAULT_HOST:8081}"
 HLS_URL="${2:-http://$DEFAULT_HOST:8082/hls/stream.m3u8}"
@@ -26,6 +37,7 @@ printf "${YELLOW}Change DEFAULT_HOST if your backend runs elsewhere.${NC}\n"
 printf "${RED}==============================================${NC}\n\n"
 
 echo "Building Flutter web locally..."
+echo "Flutter binary: $(command -v flutter)"
 echo "API_BASE_URL=$API_BASE_URL"
 echo "HLS_URL=$HLS_URL"
 echo "ENABLE_LIVE_STREAM=$ENABLE_LIVE_STREAM"
