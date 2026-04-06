@@ -120,4 +120,8 @@ class StreamingApi {
   Future<void> stopGeneration() async {
     await _apiClient.postJson('/api/stop_generation');
   }
+
+  Future<void> clearGenerationLock() async {
+    await _apiClient.postJson('/api/clear_generation_lock');
+  }
 }

@@ -52,6 +52,16 @@ print(f"Audio folder: {AUDIO_FOLDER or '(none — video audio used)'}")
 print(f"Stats dir (persistent): {STATS_DIR or CHUNK_FOLDER}")
 print("Streaming mode: RTMP push (chunked stream)")
 
+# Clean up stale generation lock files from previous crashes / pod restarts
+for _stale in ('.generation_running', '.stop_generation'):
+    _stale_path = os.path.join(CHUNK_FOLDER, _stale)
+    if os.path.exists(_stale_path):
+        try:
+            os.remove(_stale_path)
+            print(f"Cleaned up stale {_stale}")
+        except OSError:
+            pass
+
 # Initialize clip pusher
 clip_pusher = ClipPusher(CHUNK_FOLDER, RTMP_URL,
                          audio_folder=AUDIO_FOLDER if AUDIO_FOLDER else None,
@@ -850,8 +860,14 @@ def api_cron():
     if request.method == 'GET':
         available = _cron_available()
         schedule, command = _cron_get_job() if available else (None, None)
+        # In K8s, cron is managed via CronJob resource, not host crontab
+        k8s_managed = not available and os.getenv('KUBERNETES_SERVICE_HOST') is not None
         return jsonify({
             'available': available,
+            'k8s_managed': k8s_managede and os.getenv('KUBERNETES_SERVICE_HOST') is not None
+        return jsonify({
+            'available': available,
+            'k8s_managed': k8s_managed,
             'schedule': schedule,
             'command': command,
             'project_root': PROJECT_ROOT,
@@ -1150,15 +1166,39 @@ def stop_generation():
             'error': 'No chunk generation is currently running.'
         }), 409
     try:
+        # Signal the generator to stop
         with open(stop_file, 'w') as f:
             f.write('1')
+        # Clear running flag (best-effort — may be owned by another container)
         try:
             os.remove(running_file)
+        except PermissionError:
+            try:
+                with open(running_file, 'w') as f:
+                    f.truncate(0)
+            except OSError:
+                pass
         except OSError:
             pass
         return jsonify({'success': True, 'message': 'Stop signal sent. Generation will halt after the current chunk.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/clear_generation_lock', methods=['POST'])
+def clear_generation_lock():
+    """Manually clear a stale generation lock file (e.g. after a crash)"""
+    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
+    stop_file = os.path.join(CHUNK_FOLDER, '.stop_generation')
+    cleared = []
+    for f in (running_file, stop_file):
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+                cleared.append(os.path.basename(f))
+            except OSError:
+                pass
+    return jsonify({'success': True, 'cleared': cleared})
 
 def start_clip_pusher():
     """Start the RTMP clip pusher"""

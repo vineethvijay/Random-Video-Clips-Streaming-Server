@@ -1,40 +1,34 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
-import '../models/server_status.dart';
-import '../models/stream_status.dart';
-import '../models/system_usage.dart';
-import '../services/streaming_api.dart';
+import '../providers/api_provider.dart';
+import '../providers/stream_providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/animated_progress_bar.dart';
+import '../widgets/gauge_widget.dart';
 import '../widgets/glass_card.dart';
+import '../widgets/pagination_bar.dart';
+import '../widgets/section_header.dart';
+import '../widgets/shimmer_loader.dart';
 import '../widgets/stat_card.dart';
 
-class AdminScreen extends StatefulWidget {
-  const AdminScreen({super.key, required this.api});
-  final StreamingApi api;
+class AdminScreen extends ConsumerStatefulWidget {
+  const AdminScreen({super.key});
 
   @override
-  State<AdminScreen> createState() => _AdminScreenState();
+  ConsumerState<AdminScreen> createState() => _AdminScreenState();
 }
 
-class _AdminScreenState extends State<AdminScreen> {
-  Map<String, dynamic>? _ctx;
-  List<dynamic> _cronEntries = <dynamic>[];
+class _AdminScreenState extends ConsumerState<AdminScreen> {
+  bool _busy = false;
+  bool _editingSettings = false;
   int _cronPage = 1;
   static const int _cronPerPage = 6;
-  StreamStatus? _streamStatus;
-  SystemUsage? _systemUsage;
-  ServerStatus? _serverStatus;
-  bool _loading = true;
-  bool _busy = false;
-  String? _error;
-  bool _editingSettings = false;
-  Timer? _pollTimer;
 
   final TextEditingController _cronController = TextEditingController();
   final Map<String, TextEditingController> _settingControllers = {};
+  bool _controllersInitialised = false;
 
   static const _editableKeys = <String>[
     'MAX_CHUNKS',
@@ -55,18 +49,7 @@ class _AdminScreenState extends State<AdminScreen> {
   };
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-    _pollTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) => _loadLive(),
-    );
-  }
-
-  @override
   void dispose() {
-    _pollTimer?.cancel();
     _cronController.dispose();
     for (final c in _settingControllers.values) {
       c.dispose();
@@ -74,59 +57,21 @@ class _AdminScreenState extends State<AdminScreen> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>([
-        widget.api.getAdminContext(),
-        widget.api.getCronHistory(page: 1, perPage: 40),
-        widget.api.getServerStatus(),
-        widget.api.getStreamStatus(),
-        widget.api.getSystemUsage(),
-      ]);
-      final ctx = results[0] as Map<String, dynamic>;
-      final cron = results[1] as Map<String, dynamic>;
-      final status = results[2] as ServerStatus;
-      final streamStatus = results[3] as StreamStatus;
-      final systemUsage = results[4] as SystemUsage;
-
-      final settings = (ctx['settings'] as Map<String, dynamic>?) ?? {};
-      for (final key in _editableKeys) {
-        _settingControllers[key]?.dispose();
-        _settingControllers[key] =
-            TextEditingController(text: '${settings[key] ?? ''}');
-      }
-      _cronController.text = '${ctx['cron_schedule'] ?? ''}';
-
-      if (!mounted) return;
-      setState(() {
-        _ctx = ctx;
-        _cronEntries = cron['entries'] as List<dynamic>? ?? [];
-        _serverStatus = status;
-        _streamStatus = streamStatus;
-        _systemUsage = systemUsage;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = '$e'; });
+  void _initControllers(Map<String, dynamic> ctx) {
+    if (_controllersInitialised) return;
+    _controllersInitialised = true;
+    final settings = (ctx['settings'] as Map<String, dynamic>?) ?? {};
+    for (final key in _editableKeys) {
+      _settingControllers[key]?.dispose();
+      _settingControllers[key] =
+          TextEditingController(text: '${settings[key] ?? ''}');
     }
+    _cronController.text = '${ctx['cron_schedule'] ?? ''}';
   }
 
-  Future<void> _loadLive() async {
-    try {
-      final results = await Future.wait<dynamic>([
-        widget.api.getStreamStatus(),
-        widget.api.getSystemUsage(),
-        widget.api.getServerStatus(),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _streamStatus = results[0] as StreamStatus;
-        _systemUsage = results[1] as SystemUsage;
-        _serverStatus = results[2] as ServerStatus;
-      });
-    } catch (_) {}
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _run(String ok, Future<void> Function() action) async {
@@ -135,111 +80,90 @@ class _AdminScreenState extends State<AdminScreen> {
     try {
       await action();
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(ok)));
-      await _load();
+      _toast(ok);
+      _controllersInitialised = false;
+      ref.read(adminContextProvider.notifier).refresh();
+      ref.read(cronHistoryProvider.notifier).refresh();
+      ref.read(serverStatusProvider.notifier).refresh();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('$e')));
+      _toast('$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _load,
-              child: SelectionArea(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  children: [
-                    _buildHeader(context),
-                    const SizedBox(height: 16),
-                    _buildLiveStatsRow(context),
-                    const SizedBox(height: 16),
-                    _buildActionsCard(context),
-                    const SizedBox(height: 16),
-                    _buildCronCard(context),
-                    const SizedBox(height: 16),
-                    _buildSettingsCard(context),
-                    const SizedBox(height: 16),
-                    _buildSystemInfoCard(context),
-                    if (_error != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .errorContainer
-                              .withValues(alpha: 0.5),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(_error!,
-                            style: TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onErrorContainer)),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-    );
+  Future<void> _refresh() async {
+    _controllersInitialised = false;
+    ref.read(adminContextProvider.notifier).refresh();
+    ref.read(cronHistoryProvider.notifier).refresh();
+    ref.read(serverStatusProvider.notifier).refresh();
+    ref.read(systemUsageProvider.notifier).refresh();
+    ref.read(streamStatusProvider.notifier).refresh();
   }
 
-  Widget _buildHeader(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            gradient: LinearGradient(colors: [
-              cs.primary.withValues(alpha: 0.3),
-              cs.tertiary.withValues(alpha: 0.2),
-            ]),
-            border: Border.all(color: cs.primary.withValues(alpha: 0.4)),
-          ),
-          child: Icon(Icons.admin_panel_settings_rounded,
-              color: cs.primary, size: 26),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Admin Panel',
-                  style: tt.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800, letterSpacing: -0.5)),
-              Text('Server management',
-                  style:
-                      tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
-            ],
-          ),
-        ),
-        IconButton.filledTonal(
-          onPressed: _loading ? null : _load,
-          icon: const Icon(Icons.refresh_rounded),
-          tooltip: 'Refresh',
-        ),
-      ],
+  @override
+  Widget build(BuildContext context) {
+    final ctxAsync = ref.watch(adminContextProvider);
+    final cronAsync = ref.watch(cronHistoryProvider);
+    final serverAsync = ref.watch(serverStatusProvider);
+    final streamAsync = ref.watch(streamStatusProvider);
+    final usageAsync = ref.watch(systemUsageProvider);
+
+    // Initialise controllers when data is available
+    ctxAsync.whenData((ctx) => _initControllers(ctx));
+
+    final isLoading = ctxAsync.isLoading && !ctxAsync.hasValue;
+
+    return Scaffold(
+      body: SafeArea(
+        child: isLoading
+            ? Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(children: [
+                  const ShimmerStatRow(count: 3),
+                  const SizedBox(height: 16),
+                  ShimmerLoader(count: 3, height: 100),
+                ]),
+              )
+            : RefreshIndicator(
+                onRefresh: _refresh,
+                child: SelectionArea(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                    children: [
+                      SectionHeader(
+                        title: 'Admin Panel',
+                        subtitle: 'Server management',
+                        icon: Icons.admin_panel_settings_rounded,
+                        onRefresh: _refresh,
+                      ).animate().fadeIn(duration: 300.ms).slideY(begin: -0.1, end: 0),
+                      const SizedBox(height: 20),
+                      _buildLiveStatsRow(context, streamAsync, usageAsync),
+                      const SizedBox(height: 16),
+                      _buildGauges(context, usageAsync),
+                      const SizedBox(height: 16),
+                      _buildActionsCard(context, serverAsync),
+                      const SizedBox(height: 16),
+                      _buildCronCard(context, cronAsync),
+                      const SizedBox(height: 16),
+                      _buildSettingsCard(context),
+                      const SizedBox(height: 16),
+                      _buildSystemInfoCard(context, ctxAsync, usageAsync),
+                    ],
+                  ),
+                ),
+              ),
+      ),
     );
   }
 
   // ── Live stats strip ──
 
-  Widget _buildLiveStatsRow(BuildContext context) {
-    final st = _streamStatus;
-    final su = _systemUsage;
+  Widget _buildLiveStatsRow(BuildContext context,
+      AsyncValue streamAsync, AsyncValue usageAsync) {
+    final st = streamAsync.valueOrNull;
+    final su = usageAsync.valueOrNull;
     return Wrap(
       spacing: 10,
       runSpacing: 10,
@@ -286,15 +210,53 @@ class _AdminScreenState extends State<AdminScreen> {
           gradientEnd: AppTheme.accentCyan.withValues(alpha: 0.05),
         ),
       ],
-    );
+    ).animate().fadeIn(duration: 400.ms, delay: 100.ms);
+  }
+
+  // ── Gauges ──
+
+  Widget _buildGauges(BuildContext context, AsyncValue usageAsync) {
+    final su = usageAsync.valueOrNull;
+    if (su == null) return const SizedBox.shrink();
+
+    return Row(
+      children: [
+        Expanded(
+          child: GaugeWidget(
+            value: su.cpuPercent?.toDouble() ?? 0,
+            label: 'CPU',
+            subtitle: '${su.cpuPercent?.toStringAsFixed(0) ?? 0}%',
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: GaugeWidget(
+            value: su.memPercent?.toDouble() ?? 0,
+            label: 'Memory',
+            subtitle: su.memDisplay,
+          ),
+        ),
+        if (su.gpuPercent != null) ...[
+          const SizedBox(width: 12),
+          Expanded(
+            child: GaugeWidget(
+              value: su.gpuPercent!.toDouble(),
+              label: 'GPU',
+              subtitle: su.gpuMemDisplay,
+            ),
+          ),
+        ],
+      ],
+    ).animate().fadeIn(duration: 400.ms, delay: 150.ms);
   }
 
   // ── Actions card ──
 
-  Widget _buildActionsCard(BuildContext context) {
+  Widget _buildActionsCard(BuildContext context, AsyncValue serverAsync) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final genRunning = _serverStatus?.generationInProgress == true;
+    final genRunning = serverAsync.valueOrNull?.generationInProgress == true;
+    final api = ref.read(apiProvider);
 
     return GlassCard(
       child: Column(
@@ -309,8 +271,8 @@ class _AdminScreenState extends State<AdminScreen> {
               const Spacer(),
               if (genRunning)
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: AppTheme.accentAmber.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(6),
@@ -319,12 +281,9 @@ class _AdminScreenState extends State<AdminScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       SizedBox(
-                        width: 12,
-                        height: 12,
+                        width: 12, height: 12,
                         child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppTheme.accentAmber,
-                        ),
+                          strokeWidth: 2, color: AppTheme.accentAmber),
                       ),
                       const SizedBox(width: 6),
                       Text('Generating…',
@@ -344,8 +303,8 @@ class _AdminScreenState extends State<AdminScreen> {
               FilledButton.icon(
                 onPressed: _busy
                     ? null
-                    : () => _run('Chunk generation triggered',
-                        widget.api.generateChunks),
+                    : () => _run(
+                        'Chunk generation triggered', api.generateChunks),
                 icon: const Icon(Icons.playlist_add_rounded, size: 18),
                 label: const Text('Generate Chunks'),
               ),
@@ -353,18 +312,27 @@ class _AdminScreenState extends State<AdminScreen> {
                 OutlinedButton.icon(
                   onPressed: _busy
                       ? null
-                      : () =>
-                          _run('Stop signal sent', widget.api.stopGeneration),
+                      : () => _run('Stop signal sent', api.stopGeneration),
                   icon: Icon(Icons.stop_rounded,
                       size: 18, color: AppTheme.accentRose),
                   label: Text('Stop',
                       style: TextStyle(color: AppTheme.accentRose)),
                 ),
+              if (genRunning)
+                OutlinedButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () => _run('Lock cleared', api.clearGenerationLock),
+                  icon: Icon(Icons.lock_open_rounded,
+                      size: 18, color: AppTheme.accentAmber),
+                  label: Text('Clear Lock',
+                      style: TextStyle(color: AppTheme.accentAmber)),
+                ),
               OutlinedButton.icon(
                 onPressed: _busy
                     ? null
                     : () => _run('chunk-generator restarted',
-                        widget.api.restartChunkGenerator),
+                        api.restartChunkGenerator),
                 icon: const Icon(Icons.restart_alt_rounded, size: 18),
                 label: const Text('Restart Generator'),
               ),
@@ -372,23 +340,24 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
         ],
       ),
-    );
+    ).animate().fadeIn(duration: 400.ms, delay: 200.ms);
   }
 
   // ── Cron card ──
 
-  Widget _buildCronCard(BuildContext context) {
+  Widget _buildCronCard(
+      BuildContext context, AsyncValue<List<dynamic>> cronAsync) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final totalPages = _cronEntries.isEmpty
-        ? 1
-        : (_cronEntries.length / _cronPerPage).ceil();
+    final api = ref.read(apiProvider);
+    final cronEntries = cronAsync.valueOrNull ?? [];
+    final totalPages =
+        cronEntries.isEmpty ? 1 : (cronEntries.length / _cronPerPage).ceil();
     final page = _cronPage.clamp(1, totalPages);
     final start = (page - 1) * _cronPerPage;
-    final end = (start + _cronPerPage).clamp(0, _cronEntries.length);
-    final pageItems = _cronEntries.isEmpty
-        ? <dynamic>[]
-        : _cronEntries.sublist(start, end);
+    final end = (start + _cronPerPage).clamp(0, cronEntries.length);
+    final pageItems =
+        cronEntries.isEmpty ? <dynamic>[] : cronEntries.sublist(start, end);
 
     return GlassCard(
       child: Column(
@@ -421,26 +390,23 @@ class _AdminScreenState extends State<AdminScreen> {
               FilledButton(
                 onPressed: _busy
                     ? null
-                    : () => _run('Cron updated', () {
-                          return widget.api
-                              .setCron(_cronController.text.trim());
-                        }),
+                    : () => _run('Cron updated',
+                        () => api.setCron(_cronController.text.trim())),
                 child: const Text('Set'),
               ),
               const SizedBox(width: 6),
               OutlinedButton(
                 onPressed: _busy
                     ? null
-                    : () => _run('Cron removed', widget.api.removeCron),
+                    : () => _run('Cron removed', api.removeCron),
                 child: const Text('Remove'),
               ),
             ],
           ),
-          if (_cronEntries.isNotEmpty) ...[
+          if (cronEntries.isNotEmpty) ...[
             const SizedBox(height: 14),
             Text('Run History',
-                style: tt.labelMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
+                style: tt.labelMedium?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
             ...pageItems.map((e) {
               final m = e as Map<String, dynamic>;
@@ -470,47 +436,21 @@ class _AdminScreenState extends State<AdminScreen> {
               );
             }),
             if (totalPages > 1)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Page $page of $totalPages',
-                        style: tt.labelSmall
-                            ?.copyWith(color: cs.onSurfaceVariant)),
-                    Row(children: [
-                      IconButton(
-                        onPressed: page > 1
-                            ? () =>
-                                setState(() => _cronPage = page - 1)
-                            : null,
-                        icon: const Icon(Icons.chevron_left_rounded),
-                        iconSize: 20,
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      IconButton(
-                        onPressed: page < totalPages
-                            ? () =>
-                                setState(() => _cronPage = page + 1)
-                            : null,
-                        icon: const Icon(Icons.chevron_right_rounded),
-                        iconSize: 20,
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ]),
-                  ],
-                ),
+              PaginationBar(
+                page: page,
+                totalPages: totalPages,
+                onPrev: () => setState(() => _cronPage = page - 1),
+                onNext: () => setState(() => _cronPage = page + 1),
               ),
           ] else
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text('No run history yet',
-                  style:
-                      tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                  style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
             ),
         ],
       ),
-    );
+    ).animate().fadeIn(duration: 400.ms, delay: 250.ms);
   }
 
   // ── Settings card ──
@@ -518,6 +458,7 @@ class _AdminScreenState extends State<AdminScreen> {
   Widget _buildSettingsCard(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
+    final api = ref.read(apiProvider);
 
     return GlassCard(
       child: Column(
@@ -534,7 +475,9 @@ class _AdminScreenState extends State<AdminScreen> {
                 onPressed: () =>
                     setState(() => _editingSettings = !_editingSettings),
                 icon: Icon(
-                  _editingSettings ? Icons.lock_open_rounded : Icons.edit_rounded,
+                  _editingSettings
+                      ? Icons.lock_open_rounded
+                      : Icons.edit_rounded,
                   size: 16,
                 ),
                 label: Text(_editingSettings ? 'Editing' : 'Edit'),
@@ -590,7 +533,7 @@ class _AdminScreenState extends State<AdminScreen> {
                           payload[k] =
                               _settingControllers[k]?.text.trim() ?? '';
                         }
-                        return widget.api.updateSettings(payload);
+                        return api.updateSettings(payload);
                       }),
               icon: const Icon(Icons.save_rounded, size: 18),
               label: const Text('Save Settings'),
@@ -598,16 +541,18 @@ class _AdminScreenState extends State<AdminScreen> {
           ],
         ],
       ),
-    );
+    ).animate().fadeIn(duration: 400.ms, delay: 300.ms);
   }
 
   // ── System info ──
 
-  Widget _buildSystemInfoCard(BuildContext context) {
+  Widget _buildSystemInfoCard(BuildContext context,
+      AsyncValue<Map<String, dynamic>> ctxAsync, AsyncValue usageAsync) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final sys = (_ctx?['sys_info'] as Map<String, dynamic>?) ?? {};
-    final su = _systemUsage;
+    final ctx = ctxAsync.valueOrNull ?? {};
+    final sys = (ctx['sys_info'] as Map<String, dynamic>?) ?? {};
+    final su = usageAsync.valueOrNull;
 
     return GlassCard(
       child: Column(
@@ -626,17 +571,15 @@ class _AdminScreenState extends State<AdminScreen> {
           _infoRow(context, 'CPU Cores', '${sys['cpu_cores'] ?? '—'}'),
           _infoRow(context, 'HW Accel', '${sys['hw_accel'] ?? '—'}'),
           _infoRow(context, 'Chunks', '${sys['chunks_count'] ?? '—'}'),
-          _infoRow(
-              context, 'Disk', '${sys['chunks_total_mb'] ?? '—'} MB'),
+          _infoRow(context, 'Disk', '${sys['chunks_total_mb'] ?? '—'} MB'),
           if (su != null) ...[
             const SizedBox(height: 12),
             Text('Live Usage',
-                style: tt.labelMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
+                style: tt.labelMedium?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
-            _gauge(context, 'CPU', su.cpuPercent, AppTheme.accentAmber),
+            _barGauge(context, 'CPU', su.cpuPercent, AppTheme.accentAmber),
             const SizedBox(height: 6),
-            _gauge(context, 'Memory', su.memPercent, AppTheme.accentRose),
+            _barGauge(context, 'Memory', su.memPercent, AppTheme.accentRose),
             if (su.memUsedMb != null)
               Padding(
                 padding: const EdgeInsets.only(left: 54, bottom: 6),
@@ -645,7 +588,7 @@ class _AdminScreenState extends State<AdminScreen> {
                         ?.copyWith(color: cs.onSurfaceVariant)),
               ),
             if (su.gpuPercent != null) ...[
-              _gauge(context, 'GPU', su.gpuPercent, AppTheme.accentCyan),
+              _barGauge(context, 'GPU', su.gpuPercent, AppTheme.accentCyan),
               if (su.gpuMemUsedMb != null)
                 Padding(
                   padding: const EdgeInsets.only(left: 54, bottom: 6),
@@ -657,7 +600,7 @@ class _AdminScreenState extends State<AdminScreen> {
           ],
         ],
       ),
-    );
+    ).animate().fadeIn(duration: 400.ms, delay: 350.ms);
   }
 
   Widget _infoRow(BuildContext context, String key, String value) {
@@ -670,20 +613,18 @@ class _AdminScreenState extends State<AdminScreen> {
           SizedBox(
             width: 120,
             child: Text(key,
-                style: tt.bodySmall
-                    ?.copyWith(color: cs.onSurfaceVariant)),
+                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
           ),
           Expanded(
             child: Text(value,
-                style: tt.bodyMedium
-                    ?.copyWith(fontWeight: FontWeight.w600)),
+                style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
           ),
         ],
       ),
     );
   }
 
-  Widget _gauge(
+  Widget _barGauge(
       BuildContext context, String label, num? value, Color color) {
     final pct = value?.toDouble() ?? 0;
     return Row(
@@ -691,12 +632,8 @@ class _AdminScreenState extends State<AdminScreen> {
         SizedBox(
           width: 46,
           child: Text(label,
-              style: Theme.of(context)
-                  .textTheme
-                  .labelSmall
-                  ?.copyWith(
-                      color:
-                          Theme.of(context).colorScheme.onSurfaceVariant)),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
         ),
         const SizedBox(width: 8),
         Expanded(
