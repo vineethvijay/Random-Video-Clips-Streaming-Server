@@ -5,7 +5,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../providers/api_provider.dart';
 import '../providers/stream_providers.dart';
 import '../theme/app_theme.dart';
-import '../widgets/animated_progress_bar.dart';
 import '../widgets/gauge_widget.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/pagination_bar.dart';
@@ -552,7 +551,6 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     final tt = Theme.of(context).textTheme;
     final ctx = ctxAsync.valueOrNull ?? {};
     final sys = (ctx['sys_info'] as Map<String, dynamic>?) ?? {};
-    final su = usageAsync.valueOrNull;
 
     return GlassCard(
       child: Column(
@@ -572,32 +570,6 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
           _infoRow(context, 'HW Accel', '${sys['hw_accel'] ?? '—'}'),
           _infoRow(context, 'Chunks', '${sys['chunks_count'] ?? '—'}'),
           _infoRow(context, 'Disk', '${sys['chunks_total_mb'] ?? '—'} MB'),
-          if (su != null) ...[
-            const SizedBox(height: 12),
-            Text('Live Usage',
-                style: tt.labelMedium?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            _barGauge(context, 'CPU', su.cpuPercent, AppTheme.accentAmber),
-            const SizedBox(height: 6),
-            _barGauge(context, 'Memory', su.memPercent, AppTheme.accentRose),
-            if (su.memUsedMb != null)
-              Padding(
-                padding: const EdgeInsets.only(left: 54, bottom: 6),
-                child: Text(su.memDisplay,
-                    style: tt.labelSmall
-                        ?.copyWith(color: cs.onSurfaceVariant)),
-              ),
-            if (su.gpuPercent != null) ...[
-              _barGauge(context, 'GPU', su.gpuPercent, AppTheme.accentCyan),
-              if (su.gpuMemUsedMb != null)
-                Padding(
-                  padding: const EdgeInsets.only(left: 54, bottom: 6),
-                  child: Text(su.gpuMemDisplay,
-                      style: tt.labelSmall
-                          ?.copyWith(color: cs.onSurfaceVariant)),
-                ),
-            ],
-          ],
         ],
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 350.ms);
@@ -621,38 +593,6 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _barGauge(
-      BuildContext context, String label, num? value, Color color) {
-    final pct = value?.toDouble() ?? 0;
-    return Row(
-      children: [
-        SizedBox(
-          width: 46,
-          child: Text(label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: AnimatedProgressBar(
-            progress: pct / 100,
-            height: 8,
-            startColor: color.withValues(alpha: 0.6),
-            endColor: color,
-          ),
-        ),
-        const SizedBox(width: 8),
-        SizedBox(
-          width: 44,
-          child: Text('${pct.toStringAsFixed(1)}%',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  fontFeatures: const [FontFeature.tabularFigures()])),
-        ),
-      ],
     );
   }
 }

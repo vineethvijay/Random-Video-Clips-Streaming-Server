@@ -52,9 +52,12 @@ print(f"Audio folder: {AUDIO_FOLDER or '(none — video audio used)'}")
 print(f"Stats dir (persistent): {STATS_DIR or CHUNK_FOLDER}")
 print("Streaming mode: RTMP push (chunked stream)")
 
-# Clean up stale generation lock files from previous crashes / pod restarts
+# Lock / stop files live in the trigger dir (shared emptyDir in K8s).
+# emptyDir auto-clears on pod restart so no stale-lock cleanup needed,
+# but we do it anyway for docker-compose or manual runs.
+_LOCK_DIR = TRIGGER_DIR or CHUNK_FOLDER
 for _stale in ('.generation_running', '.stop_generation'):
-    _stale_path = os.path.join(CHUNK_FOLDER, _stale)
+    _stale_path = os.path.join(_LOCK_DIR, _stale)
     if os.path.exists(_stale_path):
         try:
             os.remove(_stale_path)
@@ -683,7 +686,7 @@ def status():
     """Get server status"""
     pusher_status = clip_pusher.get_status()
 
-    generation_in_progress = os.path.exists(os.path.join(CHUNK_FOLDER, '.generation_running'))
+    generation_in_progress = os.path.exists(os.path.join(_LOCK_DIR, '.generation_running'))
 
     status_data = {
         'server': 'running',
@@ -862,9 +865,6 @@ def api_cron():
         schedule, command = _cron_get_job() if available else (None, None)
         # In K8s, cron is managed via CronJob resource, not host crontab
         k8s_managed = not available and os.getenv('KUBERNETES_SERVICE_HOST') is not None
-        return jsonify({
-            'available': available,
-            'k8s_managed': k8s_managede and os.getenv('KUBERNETES_SERVICE_HOST') is not None
         return jsonify({
             'available': available,
             'k8s_managed': k8s_managed,
@@ -1076,14 +1076,13 @@ def serve_chunk(filename):
 @app.route('/api/generate_chunk', methods=['POST'])
 def trigger_generation():
     """Trigger the chunk generator container to create new chunks manually"""
-    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
     if os.path.exists(running_file):
         return jsonify({
             'success': False,
             'error': 'Chunk generation is already running. Please wait for it to finish.'
         }), 409
-    # Prefer /app/trigger (named volume) when mounted – avoids host permission issues
-    trigger_dir = TRIGGER_DIR or ('/app/trigger' if os.path.isdir('/app/trigger') else None) or STATS_DIR or CHUNK_FOLDER
+    trigger_dir = _LOCK_DIR
     trigger_file = os.path.join(trigger_dir, '.trigger_generation')
     trigger_type = 'cron' if request.args.get('source') == 'cron' else 'manual'
     try:
@@ -1158,26 +1157,18 @@ def restart_chunk_generator():
 @app.route('/api/stop_generation', methods=['POST'])
 def stop_generation():
     """Force stop chunk generation by creating a stop signal and clearing running flag"""
-    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
-    stop_file = os.path.join(CHUNK_FOLDER, '.stop_generation')
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
+    stop_file = os.path.join(_LOCK_DIR, '.stop_generation')
     if not os.path.exists(running_file):
         return jsonify({
             'success': False,
             'error': 'No chunk generation is currently running.'
         }), 409
     try:
-        # Signal the generator to stop
         with open(stop_file, 'w') as f:
             f.write('1')
-        # Clear running flag (best-effort — may be owned by another container)
         try:
             os.remove(running_file)
-        except PermissionError:
-            try:
-                with open(running_file, 'w') as f:
-                    f.truncate(0)
-            except OSError:
-                pass
         except OSError:
             pass
         return jsonify({'success': True, 'message': 'Stop signal sent. Generation will halt after the current chunk.'})
@@ -1188,8 +1179,8 @@ def stop_generation():
 @app.route('/api/clear_generation_lock', methods=['POST'])
 def clear_generation_lock():
     """Manually clear a stale generation lock file (e.g. after a crash)"""
-    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
-    stop_file = os.path.join(CHUNK_FOLDER, '.stop_generation')
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
+    stop_file = os.path.join(_LOCK_DIR, '.stop_generation')
     cleared = []
     for f in (running_file, stop_file):
         if os.path.exists(f):

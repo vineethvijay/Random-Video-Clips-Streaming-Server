@@ -9,10 +9,8 @@ import '../models/chunk.dart';
 import '../providers/api_provider.dart';
 import '../providers/stream_providers.dart';
 import '../theme/app_theme.dart';
-import '../widgets/adaptive_grid.dart';
-import '../widgets/audio_card.dart';
-import '../widgets/chunk_card.dart';
 import '../widgets/filter_bar.dart';
+import '../widgets/media_list_tile.dart';
 import '../widgets/pagination_bar.dart';
 import '../widgets/section_header.dart';
 import '../widgets/shimmer_loader.dart';
@@ -56,25 +54,20 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
   final TextEditingController _chunkSearch = TextEditingController();
   ChunkSort _chunkSort = ChunkSort.dateDesc;
   int _chunksPage = 1;
-  static const int _chunksPerPage = 6;
+  static const int _chunksPerPage = 15;
   Timer? _chunkSearchDebounce;
 
   // Audio state
   final TextEditingController _audioSearch = TextEditingController();
   AudioSort _audioSort = AudioSort.durationDesc;
   int _audioPage = 1;
-  static const int _audioPerPage = 8;
+  static const int _audioPerPage = 20;
   Timer? _audioSearchDebounce;
-
-  // For progress bars
-  Timer? _progressTimer;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    _progressTimer = Timer.periodic(
-        const Duration(seconds: 1), (_) { if (mounted) setState(() {}); });
   }
 
   @override
@@ -84,15 +77,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     _audioSearch.dispose();
     _chunkSearchDebounce?.cancel();
     _audioSearchDebounce?.cancel();
-    _progressTimer?.cancel();
     super.dispose();
-  }
-
-  String _fmtSec(num? sec) {
-    if (sec == null || sec < 0) return '0:00';
-    final m = sec ~/ 60;
-    final s = sec.toInt() % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
   }
 
   void _toast(String msg) {
@@ -108,14 +93,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
 
   // ── Chunk filtering ──
 
-  List<Chunk> _filterChunks(List<Chunk> chunks, String? nowPlaying) {
+  List<Chunk> _filterChunks(List<Chunk> chunks) {
     var out = chunks.toList();
     final q = _chunkSearch.text.trim().toLowerCase();
     if (q.isNotEmpty) {
       out = out.where((c) => c.name.toLowerCase().contains(q)).toList();
     }
-    if (nowPlaying != null) out = out.where((c) => c.name != nowPlaying).toList();
-
     switch (_chunkSort) {
       case ChunkSort.dateDesc:
         out.sort((a, b) => (b.timestamp ?? 0).compareTo(a.timestamp ?? 0));
@@ -133,14 +116,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     return out;
   }
 
-  List<AudioFile> _filterAudio(List<AudioFile> audio, String? nowPlaying) {
+  List<AudioFile> _filterAudio(List<AudioFile> audio) {
     var out = audio.toList();
     final q = _audioSearch.text.trim().toLowerCase();
     if (q.isNotEmpty) {
       out = out.where((a) => a.name.toLowerCase().contains(q)).toList();
     }
-    if (nowPlaying != null) out = out.where((a) => a.name != nowPlaying).toList();
-
     switch (_audioSort) {
       case AudioSort.nameAsc:
         out.sort((a, b) => a.name.compareTo(b.name));
@@ -163,6 +144,16 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     final start = (page - 1) * perPage;
     if (start >= items.length || start < 0) return <T>[];
     return items.sublist(start, (start + perPage).clamp(0, items.length));
+  }
+
+  String _relativeTime(String createdAt) {
+    final dt = DateTime.tryParse(createdAt);
+    if (dt == null) return createdAt;
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays > 0) return '${diff.inDays}d ago';
+    if (diff.inHours > 0) return '${diff.inHours}h ago';
+    if (diff.inMinutes > 0) return '${diff.inMinutes}m ago';
+    return 'Just now';
   }
 
   @override
@@ -233,109 +224,98 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     return chunksAsync.when(
       loading: () => Padding(
         padding: const EdgeInsets.all(16),
-        child: ShimmerLoader(count: 4, height: 180),
+        child: ShimmerLoader(count: 8, height: 52),
       ),
       error: (e, _) => Center(child: Text('$e')),
       data: (allChunks) {
-        final st = streamAsync.valueOrNull;
-        final filtered = _filterChunks(allChunks, nowPlaying);
+        final filtered = _filterChunks(allChunks);
         final totalPages = filtered.isEmpty ? 1 : (filtered.length / _chunksPerPage).ceil();
         final page = _chunksPage.clamp(1, totalPages);
         final paged = _page(filtered, page, _chunksPerPage);
 
-        // Now playing chunk
-        final npChunk = nowPlaying != null
-            ? allChunks.cast<Chunk?>().firstWhere(
-                (c) => c?.name == nowPlaying, orElse: () => null)
-            : null;
-
-        return SelectionArea(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-            children: [
-              // Filter bar
-              FilterBar(
-                searchController: _chunkSearch,
-                searchHint: 'Search chunks…',
-                onSearchChanged: (_) {
-                  _chunkSearchDebounce?.cancel();
-                  _chunkSearchDebounce = Timer(
-                    const Duration(milliseconds: 300),
-                    () => setState(() => _chunksPage = 1),
-                  );
-                },
-                sortWidget: SortDropdown<ChunkSort>(
-                  value: _chunkSort,
-                  labels: _chunkSortLabels,
-                  onChanged: (v) => setState(() {
-                    _chunkSort = v;
-                    _chunksPage = 1;
-                  }),
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: [
+            // Filter bar
+            FilterBar(
+              searchController: _chunkSearch,
+              searchHint: 'Search chunks…',
+              onSearchChanged: (_) {
+                _chunkSearchDebounce?.cancel();
+                _chunkSearchDebounce = Timer(
+                  const Duration(milliseconds: 300),
+                  () => setState(() => _chunksPage = 1),
+                );
+              },
+              sortWidget: SortDropdown<ChunkSort>(
+                value: _chunkSort,
+                labels: _chunkSortLabels,
+                onChanged: (v) => setState(() {
+                  _chunkSort = v;
+                  _chunksPage = 1;
+                }),
+              ),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentCyan.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
                 ),
-                trailing: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppTheme.accentCyan.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '${filtered.length} chunks',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppTheme.accentCyan, fontWeight: FontWeight.w700),
-                  ),
+                child: Text(
+                  '${filtered.length} chunks',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppTheme.accentCyan, fontWeight: FontWeight.w700),
                 ),
               ),
-              const SizedBox(height: 16),
+            ),
+            const SizedBox(height: 12),
 
-              // Now playing card (full width)
-              if (npChunk != null) ...[
-                ChunkCard(
-                  chunk: npChunk,
-                  isNowPlaying: true,
-                  progress: _chunkProgress(st),
-                  elapsedLabel: _fmtSec(_chunkElapsed(st)),
-                  totalLabel: _fmtSec(st?.currentChunkDuration),
+            // Chunk list
+            if (paged.isEmpty)
+              _emptyState('No video chunks found')
+            else
+              ...paged.asMap().entries.map((entry) {
+                final i = entry.key;
+                final c = entry.value;
+                final isNP = c.name == nowPlaying;
+                final sub = '${_relativeTime(c.createdAt)}  ·  ${c.sizeMb} MB'
+                    '${c.daysToExpire != null ? '  ·  ${c.daysToExpire}d left' : ''}';
+                return MediaListTile(
+                  title: c.name,
+                  subtitle: sub,
+                  icon: Icons.movie_rounded,
+                  isNowPlaying: isNP,
+                  accentColor: AppTheme.nowPlayingBlue,
+                  badges: [
+                    if (c.videoCodec != null)
+                      BadgeInfo(text: c.videoCodec!.toUpperCase(), color: AppTheme.accentCyan),
+                    if (c.width != null && c.height != null)
+                      BadgeInfo(text: '${c.width}x${c.height}', color: AppTheme.accentLavender),
+                  ],
                   onPlay: () async {
-                    await api.skipToNext();
-                    _toast('Skipping…');
+                    if (isNP) {
+                      await api.skipToNext();
+                      _toast('Skipping…');
+                    } else {
+                      await api.playChunk(c.name);
+                      _toast('Playing "${c.name}"');
+                    }
                   },
-                  onSources: npChunk.hasSources
-                      ? () => SourcesSheet.show(context, npChunk)
+                  onSources: c.hasSources
+                      ? () => SourcesSheet.show(context, c)
                       : null,
-                ).animate().fadeIn(duration: 300.ms),
-                const SizedBox(height: 16),
-              ],
+                ).animate().fadeIn(duration: 150.ms, delay: (30 * i).ms);
+              }),
 
-              // Grid of chunks
-              if (paged.isEmpty && npChunk == null)
-                _emptyState('No video chunks found')
-              else
-                AdaptiveGrid(
-                  minCrossAxisExtent: 320,
-                  mainAxisExtent: 340,
-                  children: paged.map((c) {
-                    return ChunkCard(
-                      chunk: c,
-                      onPlay: () async {
-                        await api.playChunk(c.name);
-                        _toast('Playing "${c.name}"');
-                      },
-                      onSources: c.hasSources
-                          ? () => SourcesSheet.show(context, c)
-                          : null,
-                    );
-                  }).toList(),
-                ),
-
-              if (filtered.isNotEmpty)
-                PaginationBar(
-                  page: page,
-                  totalPages: totalPages,
-                  onPrev: () => setState(() => _chunksPage = page - 1),
-                  onNext: () => setState(() => _chunksPage = page + 1),
-                ),
-            ],
-          ),
+            if (filtered.isNotEmpty)
+              PaginationBar(
+                page: page,
+                totalPages: totalPages,
+                onPrev: () => setState(() => _chunksPage = page - 1),
+                onNext: () => setState(() => _chunksPage = page + 1),
+                onPageSelected: (p) => setState(() => _chunksPage = p),
+              ),
+          ],
         );
       },
     );
@@ -352,145 +332,100 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     return audioAsync.when(
       loading: () => Padding(
         padding: const EdgeInsets.all(16),
-        child: ShimmerLoader(count: 6, height: 80),
+        child: ShimmerLoader(count: 10, height: 52),
       ),
       error: (e, _) => Center(child: Text('$e')),
       data: (allAudio) {
-        final st = streamAsync.valueOrNull;
-        final filtered = _filterAudio(allAudio, nowPlaying);
+        final filtered = _filterAudio(allAudio);
         final totalPages = filtered.isEmpty ? 1 : (filtered.length / _audioPerPage).ceil();
         final page = _audioPage.clamp(1, totalPages);
         final paged = _page(filtered, page, _audioPerPage);
 
-        final npAudio = nowPlaying != null
-            ? allAudio.cast<AudioFile?>().firstWhere(
-                (a) => a?.name == nowPlaying, orElse: () => null)
-            : null;
-
-        return SelectionArea(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-            children: [
-              // Filter bar
-              FilterBar(
-                searchController: _audioSearch,
-                searchHint: 'Search audio…',
-                onSearchChanged: (_) {
-                  _audioSearchDebounce?.cancel();
-                  _audioSearchDebounce = Timer(
-                    const Duration(milliseconds: 300),
-                    () => setState(() => _audioPage = 1),
-                  );
-                },
-                sortWidget: SortDropdown<AudioSort>(
-                  value: _audioSort,
-                  labels: _audioSortLabels,
-                  onChanged: (v) => setState(() {
-                    _audioSort = v;
-                    _audioPage = 1;
-                  }),
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: [
+            // Filter bar
+            FilterBar(
+              searchController: _audioSearch,
+              searchHint: 'Search audio…',
+              onSearchChanged: (_) {
+                _audioSearchDebounce?.cancel();
+                _audioSearchDebounce = Timer(
+                  const Duration(milliseconds: 300),
+                  () => setState(() => _audioPage = 1),
+                );
+              },
+              sortWidget: SortDropdown<AudioSort>(
+                value: _audioSort,
+                labels: _audioSortLabels,
+                onChanged: (v) => setState(() {
+                  _audioSort = v;
+                  _audioPage = 1;
+                }),
+              ),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentEmerald.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
                 ),
-                trailing: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppTheme.accentEmerald.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '${filtered.length} tracks',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppTheme.accentEmerald, fontWeight: FontWeight.w700),
-                  ),
+                child: Text(
+                  '${filtered.length} tracks',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppTheme.accentEmerald, fontWeight: FontWeight.w700),
                 ),
               ),
-              const SizedBox(height: 16),
+            ),
+            const SizedBox(height: 12),
 
-              // Now playing audio
-              if (npAudio != null) ...[
-                AudioCard(
-                  audio: npAudio,
-                  isNowPlaying: true,
-                  progress: _audioProgress(st),
-                  elapsedLabel: _fmtSec(st?.audioPositionSec),
-                  totalLabel: _fmtSec(st?.audioTrackDurationSec),
+            // Audio list
+            if (paged.isEmpty)
+              _emptyState('No audio files found')
+            else
+              ...paged.asMap().entries.map((entry) {
+                final i = entry.key;
+                final a = entry.value;
+                final isNP = a.name == nowPlaying;
+                final sub = '${a.sizeMb} MB'
+                    '${a.durationDisplay != null ? '  ·  ${a.durationDisplay}' : ''}';
+                return MediaListTile(
+                  title: a.name,
+                  subtitle: sub,
+                  icon: isNP ? Icons.music_note_rounded : Icons.audiotrack_rounded,
+                  isNowPlaying: isNP,
+                  accentColor: AppTheme.accentEmerald,
                   onPlay: () async {
-                    await api.skipToNextAudio();
-                    _toast('Skipping audio…');
+                    if (isNP) {
+                      await api.skipToNextAudio();
+                      _toast('Skipping audio…');
+                    } else {
+                      await api.playAudio(a.name);
+                      _toast('Playing "${a.name}"');
+                    }
                   },
-                ).animate().fadeIn(duration: 300.ms),
-                const SizedBox(height: 12),
-              ],
+                  onDelete: () async {
+                    await api.deleteAudio(a.path);
+                    _toast('Deleted "${a.name}"');
+                    ref.read(audioFilesProvider.notifier).refresh();
+                  },
+                ).animate().fadeIn(duration: 150.ms, delay: (30 * i).ms);
+              }),
 
-              // Audio list
-              if (paged.isEmpty && npAudio == null)
-                _emptyState('No audio files found')
-              else
-                ...paged.asMap().entries.map((entry) {
-                  final i = entry.key;
-                  final a = entry.value;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: AudioCard(
-                      audio: a,
-                      onPlay: () async {
-                        await api.playAudio(a.name);
-                        _toast('Playing "${a.name}"');
-                      },
-                      onDelete: () async {
-                        await api.deleteAudio(a.path);
-                        _toast('Deleted "${a.name}"');
-                        ref.read(audioFilesProvider.notifier).refresh();
-                      },
-                    ).animate().fadeIn(
-                      duration: 200.ms,
-                      delay: (50 * i).ms,
-                    ),
-                  );
-                }),
-
-              if (filtered.isNotEmpty)
-                PaginationBar(
-                  page: page,
-                  totalPages: totalPages,
-                  onPrev: () => setState(() => _audioPage = page - 1),
-                  onNext: () => setState(() => _audioPage = page + 1),
-                ),
-            ],
-          ),
+            if (filtered.isNotEmpty)
+              PaginationBar(
+                page: page,
+                totalPages: totalPages,
+                onPrev: () => setState(() => _audioPage = page - 1),
+                onNext: () => setState(() => _audioPage = page + 1),
+                onPageSelected: (p) => setState(() => _audioPage = p),
+              ),
+          ],
         );
       },
     );
   }
 
   // ── Helpers ──
-
-  double _chunkProgress(dynamic st) {
-    if (st == null) return 0;
-    final startedAt = st.currentChunkStartedAt;
-    final duration = st.currentChunkDuration;
-    if (startedAt == null || duration == null || duration <= 0) return 0;
-    final now = DateTime.now().millisecondsSinceEpoch / 1000;
-    return ((now - startedAt.toDouble()) / duration.toDouble()).clamp(0.0, 1.0);
-  }
-
-  num? _chunkElapsed(dynamic st) {
-    if (st == null) return null;
-    final startedAt = st.currentChunkStartedAt;
-    final duration = st.currentChunkDuration;
-    if (startedAt == null || duration == null) return null;
-    final now = DateTime.now().millisecondsSinceEpoch / 1000;
-    return (now - startedAt.toDouble()).clamp(0.0, duration.toDouble());
-  }
-
-  double _audioProgress(dynamic st) {
-    if (st == null) return 0;
-    final pos = st.audioPositionSec;
-    final dur = st.audioTrackDurationSec;
-    if (pos != null && dur != null && dur > 0) {
-      return (pos / dur).clamp(0.0, 1.0);
-    }
-    return 0;
-  }
 
   Widget _emptyState(String message) {
     final cs = Theme.of(context).colorScheme;

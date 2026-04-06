@@ -19,7 +19,10 @@ HW_ACCEL="${HW_ACCEL:-none}"
 # VIDEO_WALL=1: triple-panel layout (3 portrait clips side-by-side) per segment
 VIDEO_WALL="${VIDEO_WALL:-0}"
 
-RUNNING_FILE="$OUTPUT_DIR/.generation_running"
+# Lock/stop files go in TRIGGER_DIR (shared emptyDir in K8s) so both
+# the generator and the API container can read/write them.
+LOCK_DIR="${TRIGGER_DIR:-$OUTPUT_DIR}"
+RUNNING_FILE="$LOCK_DIR/.generation_running"
 DURATION_CACHE=""
 MODEL_CACHE=""
 cleanup() {
@@ -155,7 +158,7 @@ USED_SEGMENTS_JSON="${STATS_DIR}/.used_segments.json"
 SEGMENT_TRACKER="${SEGMENT_TRACKER:-/scripts/segment_tracker.py}"
 
 # Generate CHUNKS_PER_RUN chunks
-STOP_FILE="$OUTPUT_DIR/.stop_generation"
+STOP_FILE="$LOCK_DIR/.stop_generation"
 CHUNKS_CREATED_FILE="${STATS_DIR}/.chunks_created_total"
 for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   if [ -f "$STOP_FILE" ]; then
