@@ -493,8 +493,14 @@ MODEL_THUMBNAIL_CACHE_FILENAME = '.model_thumbnails.json'
 
 
 def _extract_video_id(path):
-    """Extract 11-char YouTube video ID from path (e.g. .../abc123.mp4 -> abc123)."""
+    """Extract 11-char YouTube video ID from path.
+    Supports Pinchflat format: 'Title [video_id].mp4' and TubeArchivist legacy: 'video_id.mp4'."""
     stem = os.path.splitext(os.path.basename(path))[0]
+    # Pinchflat: "Title [video_id]"
+    m = re.search(r'\[([a-zA-Z0-9_-]{11})\]', stem)
+    if m:
+        return m.group(1)
+    # TubeArchivist legacy: stem IS the video_id
     if stem and len(stem) == 11 and stem.replace('-', '').replace('_', '').isalnum():
         return stem
     return None
@@ -1060,7 +1066,7 @@ def trigger_generation():
             'success': False,
             'error': 'Chunk generation is already running. Please wait for it to finish.'
         }), 409
-    # Prefer /app/trigger (named volume) when mounted – avoids host permission issues on Proxmox
+    # Prefer /app/trigger (named volume) when mounted – avoids host permission issues
     trigger_dir = TRIGGER_DIR or ('/app/trigger' if os.path.isdir('/app/trigger') else None) or STATS_DIR or CHUNK_FOLDER
     trigger_file = os.path.join(trigger_dir, '.trigger_generation')
     trigger_type = 'cron' if request.args.get('source') == 'cron' else 'manual'
@@ -1121,14 +1127,14 @@ def update_settings():
 
 @app.route('/api/restart_chunk_generator', methods=['POST'])
 def restart_chunk_generator():
-    """Restart the chunk-generator container via Docker API"""
+    """Trigger the chunk-generator via shared trigger file (works in both Docker Compose and K8s)"""
     try:
-        import docker
-        # Use Unix socket directly to avoid "http+docker" scheme errors (requests 2.32+ / Docker Desktop)
-        client = docker.DockerClient(base_url='unix:///var/run/docker.sock')
-        container = client.containers.get('chunk-generator')
-        container.restart()
-        return jsonify({'success': True, 'message': 'chunk-generator restarted'})
+        trigger_dir = os.environ.get('TRIGGER_DIR', '/app/trigger')
+        trigger_file = os.path.join(trigger_dir, '.trigger_generation')
+        os.makedirs(trigger_dir, exist_ok=True)
+        with open(trigger_file, 'w') as f:
+            f.write('manual')
+        return jsonify({'success': True, 'message': 'chunk-generator trigger sent'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

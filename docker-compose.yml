@@ -52,6 +52,7 @@ services:
       - VIDEO_HOST_PATH=${VIDEO_FOLDER:-./videos}
       - TUBEARCHIVIST_URL=${TUBEARCHIVIST_URL:-}
       - TUBEARCHIVIST_TOKEN=${TUBEARCHIVIST_TOKEN:-}
+      - WATERMARK_FALLBACK=${WATERMARK_FALLBACK:-}
       - VIDEO_WALL=${VIDEO_WALL:-0}
       - OUTPUT_DIR=/chunks
       - STATS_DIR=/app/stats
@@ -75,7 +76,6 @@ services:
       dockerfile: Dockerfile
     image: random-video-streamer:latest
     container_name: random-video-streamer
-    user: root  # needed for Docker socket access (restart chunk-generator from UI)
     init: true
     ports:
       - "${PORT:-8081}:8080"
@@ -87,7 +87,6 @@ services:
       - /var/spool/cron/crontabs:/host-crontab:rw
       - ./.env:/app/.env
       - ./backend/app.py:/app/app.py:ro
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TZ=${TZ:-Europe/Amsterdam}
       - CHUNK_FOLDER=/chunks

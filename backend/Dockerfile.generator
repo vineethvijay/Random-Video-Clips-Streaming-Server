@@ -12,10 +12,11 @@ RUN mkdir -p /etc/fonts
 COPY scripts/fonts.conf /etc/fonts/fonts.conf
 ENV FONTCONFIG_FILE=/etc/fonts/fonts.conf
 
-COPY generate_chunk.sh /generate_chunk.sh
+# Copy scripts individually so changing one doesn't bust cache for others
 COPY scripts/segment_tracker.py /scripts/segment_tracker.py
-COPY scripts/tubearchivist_metadata.py /scripts/tubearchivist_metadata.py
+COPY scripts/video_metadata.py /scripts/video_metadata.py
 COPY scripts/chunk-gen-entrypoint.sh /chunk-gen-entrypoint.sh
-RUN chmod +x /generate_chunk.sh /scripts/segment_tracker.py /scripts/tubearchivist_metadata.py /chunk-gen-entrypoint.sh
+COPY generate_chunk.sh /generate_chunk.sh
+RUN chmod +x /generate_chunk.sh /scripts/segment_tracker.py /scripts/video_metadata.py /chunk-gen-entrypoint.sh
 
 ENTRYPOINT ["/chunk-gen-entrypoint.sh"]

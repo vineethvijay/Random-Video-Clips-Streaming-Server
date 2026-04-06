@@ -207,8 +207,14 @@ class ClipPusher:
         return f'{m:d}:{s2:02d}'
 
     def _extract_video_id(self, path: str) -> Optional[str]:
-        """Extract 11-char YouTube video ID from path (e.g. .../UCxxx/abc123.mp4 -> abc123)."""
+        """Extract 11-char YouTube video ID from path.
+        Supports Pinchflat format: 'Title [video_id].mp4' and TubeArchivist legacy: 'video_id.mp4'."""
         stem = os.path.splitext(os.path.basename(path))[0]
+        # Pinchflat: "Title [video_id]"
+        m = re.search(r'\[([a-zA-Z0-9_-]{11})\]', stem)
+        if m:
+            return m.group(1)
+        # TubeArchivist legacy: stem IS the video_id
         if stem and len(stem) == 11 and stem.replace('-', '').replace('_', '').isalnum():
             return stem
         return None

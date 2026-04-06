@@ -23,16 +23,14 @@ if [[ $# -eq 0 ]]; then
   echo -e "\033[1;36m🎬 Flutter Client Builder\033[0m"
   echo "──────────────────────────────"
   echo -e "  \033[0;32m1)\033[0m Build Web  (Local Env) & Serve"
-  echo -e "  \033[0;32m2)\033[0m Build APK  (Proxmox Env)"
-  echo -e "  \033[0;32m3)\033[0m Build Web  (Proxmox Env) & Deploy to Proxmox"
+  echo -e "  \033[0;32m2)\033[0m Build APK  (K8s Env) & Copy to Dropbox"
   echo ""
-  read -p "Select option [1-3] (default 1): " OPT
+  read -p "Select option [1-2] (default 1): " OPT
   OPT=${OPT:-1}
   
   case $OPT in
     1) ENV_TARGET="local"; BUILD_TARGET="web"; SERVE=true ;;
-    2) ENV_TARGET="proxmox"; BUILD_TARGET="apk" ;;
-    3) ENV_TARGET="proxmox"; BUILD_TARGET="web"; DEPLOY=true ;;
+    2) ENV_TARGET="k8s"; BUILD_TARGET="apk" ;;
     *) echo "Invalid option"; exit 1 ;;
   esac
   
@@ -169,6 +167,17 @@ fi
 
 echo "✅ Build completed for $BUILD_TARGET ($ENV_TARGET)!"
 
+# --- Copy APK to Dropbox if available ---
+if [[ "$BUILD_TARGET" == "apk" ]]; then
+  DROPBOX_DIR="$HOME/Library/CloudStorage/Dropbox"
+  if [[ -d "$DROPBOX_DIR" ]]; then
+    DATE_SHORT=$(date +%d-%b-%Y)
+    APK_NAME="random-home-streamer-${DATE_SHORT}.apk"
+    cp "$APP_DIR/build/app/outputs/flutter-apk/app-release.apk" "$DROPBOX_DIR/$APK_NAME" 2>/dev/null && \
+      echo "📦 Copied to Dropbox: $APK_NAME" || true
+  fi
+fi
+
 # ----------------------------------------------------------
 # Post-Build Steps (Serve & Deploy)
 # ----------------------------------------------------------
@@ -190,24 +199,6 @@ if [[ "$SERVE" == true && "$BUILD_TARGET" == "web" ]]; then
 fi
 
 if [[ "$DEPLOY" == true && "$BUILD_TARGET" == "web" ]]; then
-  SSH_HOST=$(eval echo \$${ENV_UPPER}_SSH_HOST)
-  REMOTE_WEB_DIR=$(eval echo \$${ENV_UPPER}_REMOTE_WEB_DIR)
-  UI_CONTAINER=$(eval echo \$${ENV_UPPER}_UI_CONTAINER)
-  UI_PORT=$(eval echo \$${ENV_UPPER}_UI_PORT)
-  
-  if [[ -z "$SSH_HOST" || -z "$REMOTE_WEB_DIR" ]]; then
-    echo "❌ Error: Must specify ${ENV_UPPER}_SSH_HOST and ${ENV_UPPER}_REMOTE_WEB_DIR in config for deployment."
-    exit 1
-  fi
-  
-  echo ""
-  echo "🚀 Deploying to $SSH_HOST..."
-  ssh "$SSH_HOST" "mkdir -p \"$REMOTE_WEB_DIR\""
-  rsync -avz --delete "$APP_DIR/build/web/" "$SSH_HOST:$REMOTE_WEB_DIR/"
-  
-  if [[ -n "$UI_CONTAINER" && -n "$UI_PORT" ]]; then
-    echo "🔄 Restarting Nginx container ($UI_CONTAINER)..."
-    ssh "$SSH_HOST" "docker rm -f \"$UI_CONTAINER\" >/dev/null 2>&1 || true; docker run -d --name \"$UI_CONTAINER\" --restart unless-stopped -p \"$UI_PORT:80\" -v \"$REMOTE_WEB_DIR:/usr/share/nginx/html:ro\" nginx:alpine >/dev/null"
-  fi
-  echo "🎉 Deployment Success! UI live at http://${SSH_HOST##*@}:$UI_PORT"
+  echo "⚠️  Deploy is not supported in this environment. Build the nginx image and push to K8s instead."
+  echo "   See: scripts/build-and-push.sh"
 fi

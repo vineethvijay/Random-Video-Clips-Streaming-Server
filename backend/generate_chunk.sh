@@ -124,8 +124,9 @@ get_model_label_cached() {
   fi
 
   local model=""
-  if [ -n "${TUBEARCHIVIST_URL}" ] && [ -n "${TUBEARCHIVIST_TOKEN}" ] && [ -f "${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}" ]; then
-    model=$(python3 "${TUBEARCHIVIST_SCRIPT:-/scripts/tubearchivist_metadata.py}" --model-only "${TUBEARCHIVIST_URL}" "${TUBEARCHIVIST_TOKEN}" "$path" 2>/dev/null)
+  local meta_script="${VIDEO_METADATA_SCRIPT:-/scripts/video_metadata.py}"
+  if [ -f "$meta_script" ]; then
+    model=$(python3 "$meta_script" --model-only "$path" 2>/dev/null)
   fi
   model=$(printf '%s' "$model" | tr '\t' ' ')
   printf '%s\t%s\n' "$path" "$model" >> "$MODEL_CACHE"
@@ -420,29 +421,26 @@ ASSEOF
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"
   SOURCES_JSON="[]"
   if [ -n "$SOURCE_BASENAMES" ]; then
-    export TUBEARCHIVIST_URL TUBEARCHIVIST_TOKEN TUBEARCHIVIST_SCRIPT
+    export VIDEO_METADATA_SCRIPT WATERMARK_FALLBACK
     SOURCES_JSON=$(echo "$SOURCE_BASENAMES" | sort -u | python3 -c "
 import sys, json, subprocess, os
 paths = [l.strip() for l in sys.stdin if l.strip()]
-tube_url = (os.environ.get('TUBEARCHIVIST_URL') or '').strip().rstrip('/')
-tube_token = (os.environ.get('TUBEARCHIVIST_TOKEN') or '').strip()
-script = os.environ.get('TUBEARCHIVIST_SCRIPT', '/scripts/tubearchivist_metadata.py')
+script = os.environ.get('VIDEO_METADATA_SCRIPT', '/scripts/video_metadata.py')
 sources = []
 for path in paths:
     model = None
     thumb = None
     title = None
     channel = None
-    if tube_url and tube_token:
-        try:
-            out = subprocess.run([sys.executable, script, tube_url, tube_token, path], capture_output=True, text=True, timeout=12)
-            if out.returncode == 0:
-                d = json.loads(out.stdout or '{}')
-                model = d.get('model_info')
-                thumb = d.get('thumbnail_url')
-                title = d.get('title')
-                channel = d.get('channel')
-        except: pass
+    try:
+        out = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=12)
+        if out.returncode == 0:
+            d = json.loads(out.stdout or '{}')
+            model = d.get('model_info')
+            thumb = d.get('thumbnail_url')
+            title = d.get('title')
+            channel = d.get('channel')
+    except: pass
     sources.append({'path': path, 'model': model, 'thumbnail_url': thumb, 'title': title, 'channel': channel})
 print(json.dumps(sources))
 " 2>/dev/null)
