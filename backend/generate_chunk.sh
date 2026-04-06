@@ -4,7 +4,7 @@ TEST_MODE=0
 if [ "$1" = "test" ]; then
   echo ">>> TEST MODE: single 10s clip → test_clip_10s.mp4 <<<"
   TEST_MODE=1
-  export CHUNK_DURATION=10 CLIP_MIN=10 CLIP_MAX=10 CHUNKS_PER_RUN=1
+  export CHUNK_DURATION=10 CLIP_MIN=10 CLIP_MAX=10 CHUNKS_PER_RUN=1 VIDEO_WALL=1
   set -- manual
 fi
 
@@ -256,14 +256,14 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
         start3=$(( start3_min + RANDOM % (start3_max - start3_min + 1) ))
       fi
 
-      # Build the wall in one pass, then apply a moody + subtle-psychedelic look.
-      VF_STACK="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[stacked];[stacked]split=2[orig][tmp];[tmp]gblur=sigma=6[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.08,eq=contrast=1.03:brightness=-0.022:saturation=1.09,curves=all='0/0 0.68/0.62 1/0.88',vignette=PI/13,hue=h=5,unsharp=5:5:0.24:5:5:0.0[outf]"
+      # Build the wall in one pass, then apply a warm cinematic glow.
+      VF_STACK="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[stacked];[stacked]split=2[orig][tmp];[tmp]gblur=sigma=12[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.12,eq=contrast=1.05:brightness=-0.015:saturation=1.15,curves=red='0/0 0.25/0.28 0.5/0.55 0.75/0.78 1/1':green='0/0 0.25/0.24 0.5/0.50 0.75/0.76 1/0.97':blue='0/0 0.25/0.22 0.5/0.46 0.75/0.72 1/0.90',vignette=PI/5.5:1.2,unsharp=5:5:0.3:5:5:0.0[outf]"
       if [ -n "$MODEL_LABEL" ]; then
         if [ "$HAS_DRAWTEXT" = "1" ]; then
           echo "  Combining + drawtext..."
           WM_LABEL=$(format_watermark_label "$MODEL_LABEL")
           DT_TEXT=$(escape_drawtext_text "$WM_LABEL")
-          VF_STACK_WM="${VF_STACK};[outf]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${DT_TEXT}':fontsize=26:fontcolor=white:box=1:boxcolor=black@0.42:boxborderw=12:x=(640-tw)/2:y=h-th-24:shadowcolor=black@0.65:shadowx=2:shadowy=2[outwm]"
+          VF_STACK_WM="${VF_STACK};[outf]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${DT_TEXT}':fontsize=26:fontcolor=white:box=1:boxcolor=black@0.42:boxborderw=12:x=(w-tw)/2:y=h-th-24:shadowcolor=black@0.65:shadowx=2:shadowy=2[outwm]"
           ffmpeg -hide_banner -y \
             -ss "$start1" -i "$file" \
             -ss "$start2" -i "$file" \
@@ -318,7 +318,7 @@ Style: Watermark,DejaVu Sans,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,-
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an2\pos(320,1068)\blur0.6\h\h}${safe_label}
+Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an2\pos(960,1068)\blur0.6\h\h}${safe_label}
 ASSEOF
           ffmpeg -hide_banner -y -i "$XS_TMP" -vf "subtitles=${ASS_FILE}:fontsdir=/usr/share/fonts,format=yuv420p" -map 0:v -map 0:a? -c:v libx264 -preset veryfast -c:a copy -movflags +faststart -loglevel error "$tmp"
           rm -f "$XS_TMP"
@@ -360,7 +360,7 @@ ASSEOF
       fi
 
       # Single panel look: slightly moodier shadows, a bit more glow, subtle psychedelic hue shift.
-      VF_BASE="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,split=2[orig][tmp];[tmp]gblur=sigma=6[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.08,eq=contrast=1.03:brightness=-0.022:saturation=1.09,curves=all='0/0 0.68/0.62 1/0.88',vignette=PI/13,hue=h=5,unsharp=5:5:0.24:5:5:0.0"
+      VF_BASE="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,split=2[orig][tmp];[tmp]gblur=sigma=12[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.12,eq=contrast=1.05:brightness=-0.015:saturation=1.15,curves=red='0/0 0.25/0.28 0.5/0.55 0.75/0.78 1/1':green='0/0 0.25/0.24 0.5/0.50 0.75/0.76 1/0.97':blue='0/0 0.25/0.22 0.5/0.46 0.75/0.72 1/0.90',vignette=PI/5.5:1.2,unsharp=5:5:0.3:5:5:0.0"
       if [ -n "$MODEL_LABEL" ]; then
         if [ "$HAS_DRAWTEXT" = "1" ]; then
           WM_LABEL=$(format_watermark_label "$MODEL_LABEL")

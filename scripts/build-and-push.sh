@@ -74,7 +74,13 @@ if [[ ${#BUILT[@]} -gt 0 ]]; then
   printf '    %s\n' "${BUILT[@]}"
   echo ""
   echo "To trigger a rollout in K8s:"
-  echo "    kubectl rollout restart deployment/random-streamer"
+  for img in "${BUILT[@]}"; do
+    case "$img" in
+      *-api:*)       echo "    kubectl rollout restart deployment/random-streamer-api" ;;
+      *-generator:*) echo "    kubectl rollout restart deployment/random-streamer-generator" ;;
+      *-nginx:*)     echo "    kubectl rollout restart deployment/random-streamer-nginx" ;;
+    esac
+  done
 else
   echo "==> Nothing to build — no changes detected."
   echo "    Use FORCE=1 to rebuild all, or ONLY=api,generator,nginx to pick specific images."

@@ -1094,6 +1094,58 @@ def trigger_generation():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/generate_test_chunk', methods=['POST'])
+def generate_test_chunk():
+    """Trigger a 10-second test chunk and return its playback URL when ready."""
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
+    if os.path.exists(running_file):
+        return jsonify({'success': False, 'error': 'Generation already running.'}), 409
+
+    trigger_dir = _LOCK_DIR
+    trigger_file = os.path.join(trigger_dir, '.trigger_test_generation')
+    done_file = os.path.join(trigger_dir, '.test_generation_done')
+    test_chunk = os.path.join(CHUNK_FOLDER, 'test_clip_10s.mp4')
+
+    # Clean previous
+    for f in (done_file, trigger_file):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    # Write trigger
+    try:
+        os.makedirs(trigger_dir, exist_ok=True)
+        with open(trigger_file, 'w') as f:
+            f.write('test\n')
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    # Poll for completion (generator polls every 5s, generation takes ~10-30s)
+    import time as _time
+    deadline = _time.time() + 120  # 2 minute timeout
+    while _time.time() < deadline:
+        if os.path.exists(done_file):
+            result = 'ok'
+            try:
+                result = open(done_file).read().strip()
+            except OSError:
+                pass
+            try:
+                os.remove(done_file)
+            except OSError:
+                pass
+            if result == 'ok' and os.path.isfile(test_chunk):
+                # Build playback URL
+                host = request.host_url.rstrip('/')
+                url = f"{host}/chunks/test_clip_10s.mp4"
+                return jsonify({'success': True, 'url': url, 'message': 'Test chunk ready!'})
+            return jsonify({'success': False, 'error': 'Test generation failed.'}), 500
+        _time.sleep(2)
+
+    return jsonify({'success': False, 'error': 'Test generation timed out (120s).'}), 504
+
+
 EDITABLE_SETTINGS = {'MAX_CHUNKS', 'CHUNK_DURATION', 'CLIP_MIN', 'CLIP_MAX', 'CHUNKS_PER_RUN', 'HW_ACCEL'}
 
 @app.route('/api/update_settings', methods=['POST'])
