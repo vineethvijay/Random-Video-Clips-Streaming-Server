@@ -33,7 +33,10 @@ TRIGGER_DIR = os.getenv('TRIGGER_DIR', '').strip() or None
 PORT = int(os.getenv('PORT', '8080'))
 EXTERNAL_PORT = int(os.getenv('EXTERNAL_PORT', str(PORT)))
 HLS_PORT = int(os.getenv('HLS_PORT', '8080'))
-RTMP_URL = os.getenv('RTMP_URL', 'rtmp://nginx-rtmp:1935/live/stream')
+# Shared dir where ffmpeg writes the HLS playlist + segments (served by nginx).
+HLS_DIR = os.getenv('HLS_DIR', '/hls').strip() or '/hls'
+# Public-facing playlist path as served by the ingress/nginx (e.g. /live/stream.m3u8).
+HLS_PATH = os.getenv('HLS_PATH', '/live/stream.m3u8').strip() or '/live/stream.m3u8'
 AUDIO_FOLDER = os.getenv('AUDIO_FOLDER', '')
 # Persistent stats dir (mount this volume so hours played / chunks created survive new deployments)
 STATS_DIR = os.getenv('STATS_DIR', '').strip() or None
@@ -47,10 +50,10 @@ CRON_JOB_COMMENT = 'random-video-streamer chunk-gen'
 # Initialize components
 print(f"Initializing Random Video Clips Streaming Server...")
 print(f"Chunk folder: {CHUNK_FOLDER}")
-print(f"RTMP URL: {RTMP_URL}")
+print(f"HLS dir: {HLS_DIR}")
 print(f"Audio folder: {AUDIO_FOLDER or '(none — video audio used)'}")
 print(f"Stats dir (persistent): {STATS_DIR or CHUNK_FOLDER}")
-print("Streaming mode: RTMP push (chunked stream)")
+print("Streaming mode: HLS (direct from chunks, no RTMP)")
 
 # Lock / stop files live in the trigger dir (shared emptyDir in K8s).
 # emptyDir auto-clears on pod restart so no stale-lock cleanup needed,
@@ -66,7 +69,7 @@ for _stale in ('.generation_running', '.stop_generation'):
             pass
 
 # Initialize clip pusher
-clip_pusher = ClipPusher(CHUNK_FOLDER, RTMP_URL,
+clip_pusher = ClipPusher(CHUNK_FOLDER, HLS_DIR,
                          audio_folder=AUDIO_FOLDER if AUDIO_FOLDER else None,
                          stats_dir=STATS_DIR)
 
@@ -656,15 +659,14 @@ def api_stats():
 
 
 def _stream_url():
-    """Build HLS stream URL (respects X-Forwarded-Proto when behind HTTPS proxy)."""
-    if request.scheme == 'https':
-        return f"https://{request.host}/hls/stream.m3u8"
-    return f"http://{request.host.split(':')[0]}:{HLS_PORT}/hls/stream.m3u8"
+    """Build HLS stream URL served by the in-pod nginx (ffmpeg writes directly
+    to the shared HLS dir; nginx serves it at HLS_PATH)."""
+    return f"{request.scheme}://{request.host}{HLS_PATH}"
 
 
 @app.route('/iptv.m3u')
 def iptv_playlist():
-    """IPTV playlist for TV apps - points to nginx-rtmp HLS stream"""
+    """IPTV playlist for TV apps — points to the HLS live stream."""
     hls_url = _stream_url()
 
     playlist_content = f"""#EXTM3U
@@ -690,14 +692,15 @@ def status():
 
     status_data = {
         'server': 'running',
-        'mode': 'RTMP push (chunked stream)',
+        'mode': 'HLS (direct from chunks)',
         'stream_url': _stream_url(),
-        'rtmp_pusher': pusher_status,
+        'rtmp_pusher': pusher_status,  # retained key name for API back-compat
         'generation_in_progress': generation_in_progress,
         'config': {
             'chunk_folder': CHUNK_FOLDER,
             'port': EXTERNAL_PORT,
-            'rtmp_url': RTMP_URL
+            'hls_dir': HLS_DIR,
+            'hls_path': HLS_PATH,
         }
     }
 
@@ -1244,7 +1247,7 @@ def clear_generation_lock():
     return jsonify({'success': True, 'cleared': cleared})
 
 def start_clip_pusher():
-    """Start the RTMP clip pusher"""
+    """Start the HLS clip pusher"""
     clip_pusher.start()
 
 def shutdown_handler(signum, frame):
@@ -1265,8 +1268,8 @@ if __name__ == '__main__':
     try:
         print(f"\nStarting server internally on port {PORT}...")
         print(f"External API port exposed mapping: {EXTERNAL_PORT}")
-        print(f"RTMP stream: {RTMP_URL}")
-        print(f"HLS playback: http://localhost:{HLS_PORT}/hls/stream.m3u8")
+        print(f"HLS dir: {HLS_DIR}")
+        print(f"HLS playback path: {HLS_PATH}")
         print(f"API: http://localhost:{EXTERNAL_PORT}/api/status")
 
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)

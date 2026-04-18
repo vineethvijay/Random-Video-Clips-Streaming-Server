@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/api_provider.dart';
 import '../providers/stream_providers.dart';
@@ -90,6 +93,53 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  bool _testBusy = false;
+  int _testElapsed = 0;
+  DateTime? _testEta;
+
+  Future<void> _runTestChunk() async {
+    if (_testBusy || _busy) return;
+    setState(() {
+      _testBusy = true;
+      _testElapsed = 0;
+      _testEta = DateTime.now().add(const Duration(seconds: 60));
+    });
+    final ticker = Stream.periodic(const Duration(seconds: 1), (i) => i + 1)
+        .listen((s) {
+      if (mounted) {
+        setState(() => _testElapsed = s);
+      }
+    });
+    try {
+      final api = ref.read(apiProvider);
+      await api.generateTestChunk();
+      if (!mounted) return;
+      _toast('Test chunk ready!');
+      final playUrl = Uri.parse('http://streamer.homelab.local/chunks/test_clip_10s.mp4');
+      await launchUrl(playUrl, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (!mounted) return;
+      _toast('$e');
+    } finally {
+      ticker.cancel();
+      if (mounted) {
+        setState(() {
+          _testBusy = false;
+          _testEta = null;
+        });
+      }
+    }
+  }
+
+  String get _testCountdownLabel {
+    if (_testEta == null) return 'Generating...';
+    final remaining = _testEta!.difference(DateTime.now()).inSeconds;
+    if (remaining <= 0) return 'Almost done... ${_testElapsed}s';
+    final etaTime =
+        '${_testEta!.hour.toString().padLeft(2, '0')}:${_testEta!.minute.toString().padLeft(2, '0')}:${_testEta!.second.toString().padLeft(2, '0')}';
+    return '~${remaining}s left (ETA $etaTime)';
   }
 
   Future<void> _refresh() async {
@@ -306,6 +356,18 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
                         'Chunk generation triggered', api.generateChunks),
                 icon: const Icon(Icons.playlist_add_rounded, size: 18),
                 label: const Text('Generate Chunks'),
+              ),
+              OutlinedButton.icon(
+                onPressed: (_testBusy || _busy) ? null : _runTestChunk,
+                icon: _testBusy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.science_rounded, size: 18),
+                label: Text(_testBusy
+                    ? _testCountdownLabel
+                    : 'Test 10s Clip'),
               ),
               if (genRunning)
                 OutlinedButton.icon(

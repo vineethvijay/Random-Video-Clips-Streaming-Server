@@ -15,6 +15,7 @@ ENV FONTCONFIG_FILE=/etc/fonts/fonts.conf
 # Copy scripts individually so changing one doesn't bust cache for others
 COPY scripts/segment_tracker.py /scripts/segment_tracker.py
 COPY scripts/video_metadata.py /scripts/video_metadata.py
+COPY scripts/moody.cube /scripts/moody.cube
 COPY scripts/chunk-gen-entrypoint.sh /chunk-gen-entrypoint.sh
 COPY generate_chunk.sh /generate_chunk.sh
 RUN chmod +x /generate_chunk.sh /scripts/segment_tracker.py /scripts/video_metadata.py /chunk-gen-entrypoint.sh

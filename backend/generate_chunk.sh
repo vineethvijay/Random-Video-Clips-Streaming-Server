@@ -143,8 +143,21 @@ escape_drawtext_text() {
 
 format_watermark_label() {
   local label="$1"
-  # Keep only the ID/path fragment for known social URLs; no icon/prefix.
-  printf '%s' "$label" | python3 -c "import re,sys; s=sys.stdin.read().strip(); s=s.replace('https://','').replace('http://',''); s=re.sub(r'^www\\.', '', s, flags=re.I); s=re.sub(r'^(instagram\\.com|tiktok\\.com)/?', '', s, flags=re.I); print(s.strip('/'))"
+  # Keep only the handle/path fragment for known social URLs; no icon/prefix.
+  # Robust to malformed prefixes (ww., m., www., http(s)://) and any subdomain.
+  printf '%s' "$label" | python3 -c "
+import re, sys
+s = sys.stdin.read().strip()
+s = re.sub(r'^https?://', '', s, flags=re.I)
+m = re.search(r'(?:^|[./])(instagram\.com|tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|facebook\.com|onlyfans\.com)/+([^/?#\s]+)', s, flags=re.I)
+if m:
+    print(m.group(2).strip('/'))
+else:
+    # Generic: strip leading subdomain-ish noise and any leading domain-looking token.
+    s = re.sub(r'^[A-Za-z0-9-]{1,8}\.', '', s)
+    s = re.sub(r'^[A-Za-z0-9-]+\.[A-Za-z]{2,}/+', '', s)
+    print(s.strip('/'))
+"
 }
 
 touch "$RUNNING_FILE"
@@ -172,6 +185,9 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
   total=0
   idx=0
   SOURCE_BASENAMES=""
+  PARALLEL_SEGMENTS="${PARALLEL_SEGMENTS:-3}"
+  declare -a _SEG_CLIPS=() _SEG_SRCS=()
+  _bg_count=0
 
   while [ "$total" -lt "$CHUNK_DURATION" ]; do
     if [ -f "$STOP_FILE" ]; then
@@ -207,17 +223,20 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
       MODEL_LABEL="${WATERMARK_FALLBACK:-Sample watermark}"
     fi
     if [ "$TEST_MODE" = "1" ]; then
-      echo "  [test] Watermark text will be: ${MODEL_LABEL:-<empty — no burn-in>}"
+      _WM_PREVIEW=$(format_watermark_label "$MODEL_LABEL")
+      echo "  [test] Watermark text will be: ${_WM_PREVIEW:-<empty — no burn-in>}"
     fi
 
     if [ "$HW_ACCEL" = "nvidia" ] && [ "$HAS_NVENC" = "1" ]; then
-      ENCODER_ARGS="-c:v h264_nvenc -preset p4"
+      ENCODER_ARGS="-c:v h264_nvenc -preset p1 -bf 0"
+      DECODE_ARGS="-hwaccel cuda"
     else
       if [ "$HW_ACCEL" = "nvidia" ] && [ "$HAS_NVENC" != "1" ] && [ "$NVENC_WARNED" = "0" ]; then
         echo "Warning: h264_nvenc encoder unavailable. Falling back to libx264."
         NVENC_WARNED=1
       fi
       ENCODER_ARGS="-c:v libx264 -preset veryfast"
+      DECODE_ARGS=""
     fi
 
     if [ "$VIDEO_WALL" = "1" ]; then
@@ -256,55 +275,38 @@ for i in $(seq 1 "$CHUNKS_PER_RUN"); do
         start3=$(( start3_min + RANDOM % (start3_max - start3_min + 1) ))
       fi
 
-      # Build the wall in one pass, then apply a warm cinematic glow.
-      VF_STACK="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[stacked];[stacked]split=2[orig][tmp];[tmp]gblur=sigma=12[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.12,eq=contrast=1.05:brightness=-0.015:saturation=1.15,curves=red='0/0 0.25/0.28 0.5/0.55 0.75/0.78 1/1':green='0/0 0.25/0.24 0.5/0.50 0.75/0.76 1/0.97':blue='0/0 0.25/0.22 0.5/0.46 0.75/0.72 1/0.90',vignette=PI/5.5:1.2,unsharp=5:5:0.3:5:5:0.0[outf]"
+      # Build the wall in one pass, then apply a moody + subtle-psychedelic look.
+      # Post-LUT eq nudges contrast/sat/gamma to strengthen the grade without double-LUTing.
+      VF_STACK="[0:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v0];[1:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v1];[2:v]scale=640:1080:force_original_aspect_ratio=increase,crop=640:1080[v2];[v0][v1][v2]xstack=inputs=3:layout=0_0|w0_0|w0+w1_0[stacked];[stacked]fps=30,format=yuv420p,lut3d=/scripts/moody.cube,eq=contrast=1.08:saturation=1.08:gamma=0.96,vignette=PI/11,unsharp=5:5:0.55:5:5:0.0[outf]"
       if [ -n "$MODEL_LABEL" ]; then
         if [ "$HAS_DRAWTEXT" = "1" ]; then
           echo "  Combining + drawtext..."
           WM_LABEL=$(format_watermark_label "$MODEL_LABEL")
           DT_TEXT=$(escape_drawtext_text "$WM_LABEL")
           VF_STACK_WM="${VF_STACK};[outf]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${DT_TEXT}':fontsize=26:fontcolor=white:box=1:boxcolor=black@0.42:boxborderw=12:x=(w-tw)/2:y=h-th-24:shadowcolor=black@0.65:shadowx=2:shadowy=2[outwm]"
+          (
           ffmpeg -hide_banner -y \
-            -ss "$start1" -i "$file" \
-            -ss "$start2" -i "$file" \
-            -ss "$start3" -i "$file" \
+            $DECODE_ARGS -ss "$start1" -i "$file" \
+            $DECODE_ARGS -ss "$start2" -i "$file" \
+            $DECODE_ARGS -ss "$start3" -i "$file" \
             -t "$clip_len" \
             -filter_complex "$VF_STACK_WM" -map "[outwm]" -map "1:a?" \
             $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
             -g 60 -keyint_min 60 \
             -c:a aac -b:a 128k -ar 44100 -ac 2 \
-            -movflags +faststart -loglevel error "$tmp" || \
+            -loglevel error "$tmp" || \
           ffmpeg -hide_banner -y \
-            -ss "$start1" -i "$file" \
-            -ss "$start2" -i "$file" \
-            -ss "$start3" -i "$file" \
+            $DECODE_ARGS -ss "$start1" -i "$file" \
+            $DECODE_ARGS -ss "$start2" -i "$file" \
+            $DECODE_ARGS -ss "$start3" -i "$file" \
             -t "$clip_len" \
             -filter_complex "$VF_STACK_WM" -map "[outwm]" -an \
             $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
             -g 60 -keyint_min 60 \
-            -movflags +faststart -loglevel error "$tmp"
+            -loglevel error "$tmp"
+          ) &
         else
           echo "  Combining + ASS watermark..."
-          XS_TMP="/tmp/xstack_pre_wm_${idx}.mp4"
-          ffmpeg -hide_banner -y \
-            -ss "$start1" -i "$file" \
-            -ss "$start2" -i "$file" \
-            -ss "$start3" -i "$file" \
-            -t "$clip_len" \
-            -filter_complex "$VF_STACK" -map "[outf]" -map "1:a?" \
-            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
-            -g 60 -keyint_min 60 \
-            -c:a aac -b:a 128k -ar 44100 -ac 2 \
-            -movflags +faststart -loglevel error "$XS_TMP" || \
-          ffmpeg -hide_banner -y \
-            -ss "$start1" -i "$file" \
-            -ss "$start2" -i "$file" \
-            -ss "$start3" -i "$file" \
-            -t "$clip_len" \
-            -filter_complex "$VF_STACK" -map "[outf]" -an \
-            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
-            -g 60 -keyint_min 60 \
-            -movflags +faststart -loglevel error "$XS_TMP"
           ASS_FILE="/tmp/watermark_${idx}.ass"
           safe_label=$(printf '%s' "$MODEL_LABEL" | python3 -c "import sys; t=sys.stdin.read().rstrip(); print(t.replace('\\\\','\\\\\\\\').replace('{','\\\\{').replace('}','\\\\}'));" 2>/dev/null || echo "$MODEL_LABEL")
           cat > "$ASS_FILE" << ASSEOF
@@ -320,34 +322,61 @@ Style: Watermark,DejaVu Sans,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,-
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:00.00,99:00:00.00,Watermark,,0,0,0,,{\an2\pos(960,1068)\blur0.6\h\h}${safe_label}
 ASSEOF
-          ffmpeg -hide_banner -y -i "$XS_TMP" -vf "subtitles=${ASS_FILE}:fontsdir=/usr/share/fonts,format=yuv420p" -map 0:v -map 0:a? -c:v libx264 -preset veryfast -c:a copy -movflags +faststart -loglevel error "$tmp"
-          rm -f "$XS_TMP"
+          VF_STACK_ASS="${VF_STACK};[outf]subtitles=${ASS_FILE}:fontsdir=/usr/share/fonts[outwm]"
+          (
+          ffmpeg -hide_banner -y \
+            $DECODE_ARGS -ss "$start1" -i "$file" \
+            $DECODE_ARGS -ss "$start2" -i "$file" \
+            $DECODE_ARGS -ss "$start3" -i "$file" \
+            -t "$clip_len" \
+            -filter_complex "$VF_STACK_ASS" -map "[outwm]" -map "1:a?" \
+            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+            -g 60 -keyint_min 60 \
+            -c:a aac -b:a 128k -ar 44100 -ac 2 \
+            -loglevel error "$tmp" || \
+          ffmpeg -hide_banner -y \
+            $DECODE_ARGS -ss "$start1" -i "$file" \
+            $DECODE_ARGS -ss "$start2" -i "$file" \
+            $DECODE_ARGS -ss "$start3" -i "$file" \
+            -t "$clip_len" \
+            -filter_complex "$VF_STACK_ASS" -map "[outwm]" -an \
+            $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
+            -g 60 -keyint_min 60 \
+            -loglevel error "$tmp"
+          ) &
         fi
       else
         echo "  Combining..."
+        (
         ffmpeg -hide_banner -y \
-          -ss "$start1" -i "$file" \
-          -ss "$start2" -i "$file" \
-          -ss "$start3" -i "$file" \
+          $DECODE_ARGS -ss "$start1" -i "$file" \
+          $DECODE_ARGS -ss "$start2" -i "$file" \
+          $DECODE_ARGS -ss "$start3" -i "$file" \
           -t "$clip_len" \
           -filter_complex "$VF_STACK" -map "[outf]" -map "1:a?" \
           $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
           -g 60 -keyint_min 60 \
           -c:a aac -b:a 128k -ar 44100 -ac 2 \
-          -movflags +faststart -loglevel error "$tmp" || \
+          -loglevel error "$tmp" || \
         ffmpeg -hide_banner -y \
-          -ss "$start1" -i "$file" \
-          -ss "$start2" -i "$file" \
-          -ss "$start3" -i "$file" \
+          $DECODE_ARGS -ss "$start1" -i "$file" \
+          $DECODE_ARGS -ss "$start2" -i "$file" \
+          $DECODE_ARGS -ss "$start3" -i "$file" \
           -t "$clip_len" \
           -filter_complex "$VF_STACK" -map "[outf]" -an \
           $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
           -g 60 -keyint_min 60 \
-          -movflags +faststart -loglevel error "$tmp"
+          -loglevel error "$tmp"
+        ) &
       fi
-      [ -f "$tmp" ] && echo "file '$tmp'" >> "$CONCAT_LIST" && \
-      { fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file"); [ -n "${VIDEO_HOST_PATH}" ] && fullpath="${fullpath//${VIDEO_DIR}\//${VIDEO_HOST_PATH%/}/}"; SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+
-}${fullpath}"; total=$(( total + clip_len )); idx=$(( idx + 1 )); echo "  Segment $idx: ${total}s / ${CHUNK_DURATION}s"; true; }
+      fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file")
+      [ -n "${VIDEO_HOST_PATH}" ] && fullpath="${fullpath//${VIDEO_DIR}\/${VIDEO_HOST_PATH%/}/}"
+      _SEG_CLIPS[$idx]="$tmp"
+      _SEG_SRCS[$idx]="$fullpath"
+      total=$(( total + clip_len )); idx=$(( idx + 1 ))
+      echo "  Segment $idx: ${total}s / ${CHUNK_DURATION}s"
+      _bg_count=$((_bg_count + 1))
+      if [ "$_bg_count" -ge "$PARALLEL_SEGMENTS" ]; then wait -n; _bg_count=$((_bg_count - 1)); fi
     else
       # Single-panel: center clip with pad (original behavior)
       start=""
@@ -359,8 +388,7 @@ ASSEOF
         [ -f "$SEGMENT_TRACKER" ] && python3 "$SEGMENT_TRACKER" record "$USED_SEGMENTS_JSON" "$file" "$start" "$(( start + clip_len ))" 2>/dev/null || true
       fi
 
-      # Single panel look: slightly moodier shadows, a bit more glow, subtle psychedelic hue shift.
-      VF_BASE="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,split=2[orig][tmp];[tmp]gblur=sigma=12[blur];[orig][blur]blend=all_mode=screen:all_opacity=0.12,eq=contrast=1.05:brightness=-0.015:saturation=1.15,curves=red='0/0 0.25/0.28 0.5/0.55 0.75/0.78 1/1':green='0/0 0.25/0.24 0.5/0.50 0.75/0.76 1/0.97':blue='0/0 0.25/0.22 0.5/0.46 0.75/0.72 1/0.90',vignette=PI/5.5:1.2,unsharp=5:5:0.3:5:5:0.0"
+      VF_BASE="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,lut3d=/scripts/moody.cube,eq=contrast=1.08:saturation=1.08:gamma=0.96,vignette=PI/11,unsharp=5:5:0.55:5:5:0.0"
       if [ -n "$MODEL_LABEL" ]; then
         if [ "$HAS_DRAWTEXT" = "1" ]; then
           WM_LABEL=$(format_watermark_label "$MODEL_LABEL")
@@ -386,16 +414,34 @@ ASSEOF
         fi
       fi
 
-      ffmpeg -hide_banner -y -ss "$start" -i "$file" -t "$clip_len" \
+      (
+      ffmpeg -hide_banner -y $DECODE_ARGS -ss "$start" -i "$file" -t "$clip_len" \
         -vf "$VF_BASE" \
         $ENCODER_ARGS -b:v 4000k -maxrate 4000k -bufsize 8000k \
         -g 60 -keyint_min 60 \
         -c:a aac -b:a 128k -ar 44100 -ac 2 \
-        -movflags +faststart \
-        -loglevel error "$tmp" && \
-      echo "file '$tmp'" >> "$CONCAT_LIST" && \
-      { fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file"); [ -n "${VIDEO_HOST_PATH}" ] && fullpath="${fullpath//${VIDEO_DIR}\//${VIDEO_HOST_PATH%/}/}"; SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+
-}${fullpath}"; total=$(( total + clip_len )); idx=$(( idx + 1 )); echo "  Segment $idx: ${total}s / ${CHUNK_DURATION}s"; true; }
+        -loglevel error "$tmp"
+      ) &
+      fullpath=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file")
+      [ -n "${VIDEO_HOST_PATH}" ] && fullpath="${fullpath//${VIDEO_DIR}\/${VIDEO_HOST_PATH%/}/}"
+      _SEG_CLIPS[$idx]="$tmp"
+      _SEG_SRCS[$idx]="$fullpath"
+      total=$(( total + clip_len )); idx=$(( idx + 1 ))
+      echo "  Segment $idx: ${total}s / ${CHUNK_DURATION}s"
+      _bg_count=$((_bg_count + 1))
+      if [ "$_bg_count" -ge "$PARALLEL_SEGMENTS" ]; then wait -n; _bg_count=$((_bg_count - 1)); fi
+    fi
+  done
+
+  # Wait for all parallel segment encodes to finish
+  wait
+
+  # Build concat list and source basenames from successful clips
+  for _si in $(seq 0 $((idx - 1))); do
+    if [ -f "${_SEG_CLIPS[$_si]}" ]; then
+      echo "file '${_SEG_CLIPS[$_si]}'" >> "$CONCAT_LIST"
+      SOURCE_BASENAMES="${SOURCE_BASENAMES}${SOURCE_BASENAMES:+
+}${_SEG_SRCS[$_si]}"
     fi
   done
 
@@ -418,7 +464,7 @@ ASSEOF
     done
   fi
   ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" \
-    -c copy "$CHUNK_NAME" -loglevel error
+    -c copy -movflags +faststart "$CHUNK_NAME" -loglevel error
 
   # Write metadata: source videos (full paths + model per source), codec, resolution (for dashboard)
   META_FILE="$OUTPUT_DIR/${CHUNK_BASE}.meta.json"

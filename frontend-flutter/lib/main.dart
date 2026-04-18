@@ -18,6 +18,8 @@ class RandomVideoStreamerApp extends StatelessWidget {
       title: 'Random Video Streamer',
       theme: AppTheme.dark(),
       debugShowCheckedModeBanner: false,
+      builder: (context, child) =>
+          SelectionArea(child: child ?? const SizedBox.shrink()),
     );
   }
 }
