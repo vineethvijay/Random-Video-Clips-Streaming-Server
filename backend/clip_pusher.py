@@ -20,6 +20,12 @@ PLAY_COUNTS_FILENAME = ".play_counts.json"
 LEGACY_CHUNK_SECONDS_ESTIMATE = 120.0
 CONCAT_FILE_PATH = '/tmp/stream_concat.txt'
 
+# ── Idle auto-pause ───────────────────────────────────────────────
+# After this many seconds of no client activity (HLS playlist/segment
+# requests pinged from nginx, or explicit /api/wake), ffmpeg is stopped
+# to save CPU/GPU. Waking restarts the concat pass.
+IDLE_TIMEOUT_SEC = int(os.getenv('IDLE_TIMEOUT_SEC', '300'))
+
 # ── HLS output tuning ─────────────────────────────────────────────
 HLS_SEGMENT_SECONDS = 6     # target segment duration
 HLS_LIST_SIZE       = 30    # sliding window (~180s of live edge) — big buffer so skip/audio-skip gaps hide inside TV player buffer
@@ -57,6 +63,11 @@ class ClipPusher:
         self.audio_folder    = audio_folder
         self._stats_dir      = (stats_dir or chunk_folder).rstrip(os.sep)
         self._audio_files: List[str] = []
+        # Shuffled play queue: every track gets played exactly once per cycle
+        # before any repeats. Refilled (re-shuffled) once exhausted. This is
+        # how music players “shuffle” — fair to short and long tracks alike,
+        # unlike a least-total-seconds metric which over-picks short tracks.
+        self._audio_queue: List[str] = []
 
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -75,12 +86,24 @@ class ClipPusher:
         self._play_chunk_next: Optional[str] = None
         self._play_chunk_lock = threading.Lock()
 
+        # Idle auto-pause state. Start in paused mode so ffmpeg only spins
+        # up once a client actually asks for the stream (via /api/wake or
+        # an HLS request mirrored by nginx).
+        self._last_activity_ts: float = time.time()
+        self._paused: bool = True
+        self._idle_timeout_sec: int = IDLE_TIMEOUT_SEC
+
         # Concat-pass state
         self._pass_chunks: List[Tuple[str, float]] = []      # [(path, duration), ...]
         self._pass_cumulative: List[float] = []               # [0, d0, d0+d1, ...]
         self._pass_start_time: Optional[float] = None
         self._interrupt_reason: Optional[str] = None          # 'skip', 'play_chunk', 'audio_skip'
         self._interrupt_lock = threading.Lock()
+
+        # Systemic-failure detection: count consecutive loop iterations where
+        # we saw chunks on disk but none validated. This catches silent bugs
+        # (e.g. broken ffprobe) that would otherwise leave us idle forever.
+        self._consecutive_empty_validations = 0
 
         self._load_stream_stats()
 
@@ -407,6 +430,37 @@ class ClipPusher:
                 pass
             return True
         return False
+
+    # ── Idle pause / wake ─────────────────────────────────────────
+
+    def mark_activity(self) -> None:
+        """Record a client interaction. Refreshes the idle timer; does NOT
+        unpause (use wake() for that). Called from nginx-mirrored HLS
+        requests on every playlist/segment fetch."""
+        self._last_activity_ts = time.time()
+
+    def wake(self) -> dict:
+        """Explicit wake. Marks activity AND clears the paused flag so the
+        push loop restarts ffmpeg. Idempotent — safe to call repeatedly."""
+        was_paused = self._paused
+        self._last_activity_ts = time.time()
+        self._paused = False
+        if was_paused:
+            print("Stream wake requested — resuming ffmpeg")
+        return {
+            'paused': False,
+            'was_paused': was_paused,
+            'last_activity_ts': self._last_activity_ts,
+        }
+
+    def get_idle_status(self) -> dict:
+        idle_sec = time.time() - self._last_activity_ts
+        return {
+            'paused': self._paused,
+            'idle_seconds': round(idle_sec, 1),
+            'idle_timeout_sec': self._idle_timeout_sec,
+            'seconds_until_pause': max(0, round(self._idle_timeout_sec - idle_sec, 1)) if not self._paused else 0,
+        }
     # ── Internal ──────────────────────────────────────────────────
 
     @staticmethod
@@ -451,7 +505,12 @@ class ClipPusher:
         return float(self._coerce_audio_entry(raw)['seconds'])
 
     def _pick_audio_least_played(self, pool: List[str]) -> Optional[str]:
-        """Pick a file from pool with minimum recorded play count; random tie-break."""
+        """Pick a file from pool with minimum recorded play count; random tie-break.
+
+        Kept for backward compatibility / stats display. Not used for the
+        next-track decision anymore — see _get_next_audio for the fair
+        round-robin shuffle queue.
+        """
         if not pool:
             return None
         scores = [(self._audio_play_count(os.path.basename(p)), p) for p in pool]
@@ -461,14 +520,45 @@ class ClipPusher:
         self._current_audio = os.path.basename(chosen)
         return chosen
 
+    def _refill_audio_queue(self, avoid_first: Optional[str] = None) -> None:
+        """Reshuffle all audio files into the play queue. Optionally make sure
+        the just-played track isn't the first in the new cycle (so we don't
+        get track A immediately followed by track A again across cycles)."""
+        if not self._audio_files:
+            self._audio_queue = []
+            return
+        queue = list(self._audio_files)
+        random.shuffle(queue)
+        if (avoid_first and len(queue) > 1
+                and os.path.basename(queue[0]) == avoid_first):
+            # Swap with a random later position to avoid back-to-back repeat.
+            swap_idx = random.randrange(1, len(queue))
+            queue[0], queue[swap_idx] = queue[swap_idx], queue[0]
+        self._audio_queue = queue
+
     def _get_next_audio(self, exclude_basename: Optional[str] = None) -> Optional[str]:
-        """Pick next track: least-played among library (or among pool excluding current)."""
+        """Pop the next track off the shuffled queue. Refills the queue with a
+        fresh shuffle once exhausted, so every audio file plays exactly once
+        per cycle before any repeats. Length-fair: short and long tracks are
+        selected with equal probability per cycle.
+        """
         if not self._audio_files:
             return None
-        pool = [p for p in self._audio_files if os.path.basename(p) != exclude_basename]
-        if not pool:
-            pool = list(self._audio_files)
-        return self._pick_audio_least_played(pool)
+        # Drop any queue entries for files no longer on disk (rare, e.g.
+        # operator removed a file mid-cycle).
+        self._audio_queue = [p for p in self._audio_queue if p in self._audio_files]
+        if not self._audio_queue:
+            self._refill_audio_queue(avoid_first=exclude_basename)
+        # If the front of the queue is the track we want to skip past (e.g.
+        # user pressed audio-skip while it was playing), rotate it to the
+        # back so it still plays this cycle, just later.
+        if (exclude_basename
+                and len(self._audio_queue) > 1
+                and os.path.basename(self._audio_queue[0]) == exclude_basename):
+            self._audio_queue.append(self._audio_queue.pop(0))
+        chosen = self._audio_queue.pop(0)
+        self._current_audio = os.path.basename(chosen)
+        return chosen
 
     def _rotate_audio_after_full_chunk_round(self) -> None:
         """After a full shuffle pass, switch to another least-played track."""
@@ -530,7 +620,7 @@ class ClipPusher:
             '-f', 'hls',
             '-hls_time', str(HLS_SEGMENT_SECONDS),
             '-hls_list_size', str(HLS_LIST_SIZE),
-            '-hls_flags', 'append_list+delete_segments+omit_endlist+independent_segments+discont_start+program_date_time',
+            '-hls_flags', 'append_list+delete_segments+omit_endlist+independent_segments+discont_start+program_date_time+temp_file',
             '-hls_segment_type', 'mpegts',
             '-hls_allow_cache', '0',
             '-hls_start_number_source', 'datetime',
@@ -563,6 +653,13 @@ class ClipPusher:
         time.sleep(3)
 
         while self._running:
+            # Idle pause: if no client has touched the stream in a while,
+            # don't spin up ffmpeg — sit here and wait for a wake() or an
+            # nginx-mirrored HLS ping. Cheap busy-wait at 1Hz.
+            if self._paused:
+                time.sleep(1)
+                continue
+
             # Scan and validate chunks
             raw_chunks = sorted([
                 os.path.join(self.chunk_folder, f)
@@ -586,9 +683,35 @@ class ClipPusher:
                     print(f"Skipping invalid chunk: {os.path.basename(chunk)}")
 
             if not valid_chunks:
-                print("No valid chunks. Waiting...")
+                # Systemic-failure guard: if we saw raw chunks on disk but NONE
+                # validated for multiple consecutive cycles, something is
+                # broken upstream of chunks (e.g. ffprobe in the container).
+                # Sitting idle here is the exact failure mode that left the
+                # stream stale for 2 days on 2026-04-18. Exit loudly so the
+                # kubelet restarts the pod and the liveness probe flags it.
+                self._consecutive_empty_validations += 1
+                print(
+                    f"No valid chunks. raw_chunks={len(raw_chunks)} "
+                    f"empty_cycles={self._consecutive_empty_validations}"
+                )
+                if (len(raw_chunks) >= 10
+                        and self._consecutive_empty_validations >= 3):
+                    msg = (
+                        f"FATAL: {len(raw_chunks)} raw chunks on disk but "
+                        f"0 validated for {self._consecutive_empty_validations} "
+                        f"consecutive cycles — likely broken ffprobe or "
+                        f"systemic chunk corruption. Exiting so kubelet "
+                        f"can restart the pod."
+                    )
+                    print(msg, flush=True)
+                    # Exit the whole process (not just the thread) so the
+                    # liveness probe / kubelet handles recovery.
+                    os._exit(42)
                 time.sleep(10)
                 continue
+
+            # Reset the counter — we have valid chunks again.
+            self._consecutive_empty_validations = 0
 
             # Shuffle
             combined = list(zip(valid_chunks, durations))
@@ -701,6 +824,16 @@ class ClipPusher:
                 with self._interrupt_lock:
                     if self._interrupt_reason:
                         break
+
+                # Idle auto-pause: stop ffmpeg if no client activity recently.
+                if (time.time() - self._last_activity_ts) > self._idle_timeout_sec:
+                    print(
+                        f"Idle timeout: no client activity for "
+                        f"{int(time.time() - self._last_activity_ts)}s — pausing stream"
+                    )
+                    self._paused = True
+                    self._terminate_streamer()
+                    break
 
                 time.sleep(1)
 
