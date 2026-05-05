@@ -12,6 +12,7 @@ import time
 import re
 import signal
 import sys
+import urllib.error
 import urllib.request
 from flask import Flask, jsonify, request, Response, send_file
 from flask_cors import CORS
@@ -46,6 +47,9 @@ HOST_CRONTAB_PATH = os.getenv('HOST_CRONTAB_PATH', '').strip() or None
 PROJECT_ROOT = os.getenv('PROJECT_ROOT', '').strip() or None
 
 CRON_JOB_COMMENT = 'random-video-streamer chunk-gen'
+
+# Process start time — used by /api/stream-health startup grace period.
+_PROCESS_START_TS = time.time()
 
 # Initialize components
 print(f"Initializing Random Video Clips Streaming Server...")
@@ -712,6 +716,77 @@ def stream_status():
     return jsonify(clip_pusher.get_status())
 
 
+@app.route('/api/wake', methods=['POST', 'GET'])
+def api_wake():
+    """Explicit wake: unpauses the stream if idle. Called by the Shield app
+    on launch / resume so ffmpeg restarts before the player loads HLS."""
+    info = clip_pusher.wake()
+    info.update(clip_pusher.get_idle_status())
+    return jsonify(info), 200
+
+
+@app.route('/api/_hls_ping', methods=['GET', 'POST', 'HEAD'])
+def api_hls_ping():
+    """Internal: nginx mirrors every HLS playlist/segment request here so we
+    can track 'last client activity' for the idle auto-pause timer.
+    Fire-and-forget from nginx — must be cheap."""
+    clip_pusher.mark_activity()
+    return ('', 204)
+
+
+# Max age (seconds) of stream.m3u8 before we consider the stream dead.
+# kubelet liveness probe hits this; if it returns 503 the pod is restarted.
+STREAM_STALE_THRESHOLD_SECONDS = int(os.getenv('STREAM_STALE_THRESHOLD_SECONDS', '90'))
+
+
+@app.route('/api/stream-health')
+def stream_health():
+    """Stream-aware liveness probe.
+
+    Returns 503 if:
+      - clip_pusher control loop has exited, or
+      - stream.m3u8 doesn't exist, or
+      - stream.m3u8 mtime is older than STREAM_STALE_THRESHOLD_SECONDS.
+
+    Used as the kubelet livenessProbe so a silently-stuck pusher gets
+    restarted instead of serving a 2-day-old playlist.
+    """
+    playlist = os.path.join(HLS_DIR, 'stream.m3u8')
+    now = time.time()
+
+    # Grace period after startup — clip_pusher needs a moment to produce the
+    # first playlist. Report healthy if process uptime is under the threshold.
+    if now - _PROCESS_START_TS < STREAM_STALE_THRESHOLD_SECONDS:
+        return jsonify({'healthy': True, 'reason': 'startup_grace'}), 200
+
+    if not clip_pusher._running:
+        return jsonify({'healthy': False, 'reason': 'pusher_not_running'}), 503
+
+    # Paused (idle auto-shutdown) is a healthy state — ffmpeg is intentionally
+    # stopped, so stream.m3u8 is expected to be stale. Do not flap the pod.
+    if getattr(clip_pusher, '_paused', False):
+        return jsonify({'healthy': True, 'reason': 'idle_paused'}), 200
+
+    try:
+        mtime = os.path.getmtime(playlist)
+    except OSError as e:
+        return jsonify({'healthy': False, 'reason': f'playlist_missing: {e}'}), 503
+
+    age = now - mtime
+    if age > STREAM_STALE_THRESHOLD_SECONDS:
+        return jsonify({
+            'healthy': False,
+            'reason': 'playlist_stale',
+            'age_seconds': round(age, 1),
+            'threshold_seconds': STREAM_STALE_THRESHOLD_SECONDS,
+        }), 503
+
+    return jsonify({
+        'healthy': True,
+        'age_seconds': round(age, 1),
+    }), 200
+
+
 @app.route('/api/chunks')
 def api_chunks():
     """Get chunks with pagination (offset, limit). Used for loading more chunks on dashboard."""
@@ -1075,6 +1150,117 @@ def serve_chunk(filename):
     if not os.path.isfile(path):
         return jsonify({'error': 'Not found'}), 404
     return send_file(path, mimetype='video/mp4', as_attachment=False)
+
+
+# ── Chunk-level thumbnail endpoint ──
+# Many YouTube source videos referenced by chunks are deleted upstream and
+# return 404 at every size. As a robust fallback we extract a frame directly
+# from the chunk's own .mp4 using ffmpeg and cache it on disk. The endpoint
+# also tries YouTube first (when the chunk has a YT-derived source) so live
+# uploads still get the upstream poster.
+import subprocess as _subprocess  # local import — used only by thumb route
+
+
+def _chunk_thumb_cache_dir():
+    base = STATS_DIR or CHUNK_FOLDER
+    return os.path.join(base, '.chunk_thumbs')
+
+
+_YT_THUMB_SIZES = ('maxresdefault', 'hqdefault', 'mqdefault', 'default')
+
+
+def _try_fetch_youtube_thumb(video_id):
+    """Return (bytes, content_type) for the first YT thumbnail size that
+    actually exists, or (None, None) if the video has no thumbnails."""
+    for size in _YT_THUMB_SIZES:
+        url = f'https://i.ytimg.com/vi/{video_id}/{size}.jpg'
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'random-streamer/1.0'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = resp.read()
+                    # YouTube returns a 1x1 grey "no thumb" placeholder for some
+                    # deleted videos at /default.jpg (~1 KB). Skip it.
+                    if size == 'default' and len(data) < 2000:
+                        continue
+                    return data, resp.headers.get('Content-Type', 'image/jpeg')
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+            continue
+    return None, None
+
+
+def _extract_frame_with_ffmpeg(chunk_path, out_path):
+    """Extract a single frame ~3s into the chunk and write a 480x270 JPEG."""
+    try:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        # -ss before -i for fast seek; -frames:v 1 takes one frame.
+        # scale=480:-2 keeps aspect ratio with even height.
+        result = _subprocess.run(
+            [
+                'ffmpeg', '-y', '-ss', '3', '-i', chunk_path,
+                '-frames:v', '1', '-vf', 'scale=480:-2',
+                '-q:v', '4', out_path,
+            ],
+            stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL,
+            timeout=15,
+        )
+        return result.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+    except (_subprocess.TimeoutExpired, OSError):
+        return False
+
+
+@app.route('/api/chunk-thumb/<path:filename>')
+def serve_chunk_thumb(filename):
+    """Return a JPEG thumbnail for a chunk.
+
+    Strategy:
+      1. Serve from on-disk cache if present.
+      2. Try YouTube (if the chunk's first source has an extractable video_id).
+      3. Fall back to extracting a frame from the chunk .mp4 with ffmpeg.
+
+    URL is `/api/chunk-thumb/<chunkname>.mp4` (we keep the .mp4 in the path
+    so the frontend can build it from `chunk.name` directly).
+    """
+    if not filename or '..' in filename or '/' in filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+    chunk_path = os.path.join(CHUNK_FOLDER, filename)
+    if not os.path.abspath(chunk_path).startswith(os.path.abspath(CHUNK_FOLDER)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isfile(chunk_path):
+        return jsonify({'error': 'Not found'}), 404
+
+    cache_dir = _chunk_thumb_cache_dir()
+    cache_path = os.path.join(cache_dir, os.path.splitext(filename)[0] + '.jpg')
+
+    # 1) Cached hit
+    if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+        return send_file(cache_path, mimetype='image/jpeg', max_age=86400)
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # 2) Try YouTube based on the chunk's metadata
+    try:
+        meta = _load_chunks_meta_cache().get(filename) or {}
+        for src in (meta.get('source_videos') or []):
+            if not isinstance(src, dict):
+                continue
+            vid = _extract_video_id(src.get('path', ''))
+            if not vid:
+                continue
+            data, _ctype = _try_fetch_youtube_thumb(vid)
+            if data:
+                with open(cache_path, 'wb') as f:
+                    f.write(data)
+                return send_file(cache_path, mimetype='image/jpeg', max_age=86400)
+    except Exception:  # pragma: no cover — best-effort, never block fallback
+        pass
+
+    # 3) ffmpeg frame extraction
+    if _extract_frame_with_ffmpeg(chunk_path, cache_path):
+        return send_file(cache_path, mimetype='image/jpeg', max_age=86400)
+
+    return jsonify({'error': 'Could not generate thumbnail'}), 502
+
 
 @app.route('/api/generate_chunk', methods=['POST'])
 def trigger_generation():
