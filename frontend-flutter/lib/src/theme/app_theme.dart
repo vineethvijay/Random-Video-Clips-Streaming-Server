@@ -7,33 +7,56 @@ class AppTheme {
   AppTheme._();
 
   // ── Brand palette ──
-  static const Color _seed = Color(0xFF8B5CF6);
+  static const Color seed = Color(0xFF8B5CF6);
   static const Color accentCyan = Color(0xFF22D3EE);
   static const Color accentEmerald = Color(0xFF34D399);
   static const Color accentAmber = Color(0xFFFBBF24);
   static const Color accentRose = Color(0xFFFB7185);
   static const Color nowPlayingBlue = Color(0xFF60A5FA);
+  static const Color accentLavender = Color(0xFFA78BFA);
 
   // ── Surface tones ──
-  static const Color _bg = Color(0xFF060912);
-  static const Color _surfaceLowest = Color(0xFF070A12);
-  static const Color _surfaceLow = Color(0xFF0D111C);
-  static const Color _surface = Color(0xFF131A28);
-  static const Color _surfaceHigh = Color(0xFF1A2234);
-  static const Color _surfaceHighest = Color(0xFF222C42);
+  static const Color bg = Color(0xFF060912);
+  static const Color surfaceLowest = Color(0xFF070A12);
+  static const Color surfaceLow = Color(0xFF0D111C);
+  static const Color surface = Color(0xFF131A28);
+  static const Color surfaceHigh = Color(0xFF1A2234);
+  static const Color surfaceHighest = Color(0xFF222C42);
+
+  // ── Breakpoints ──
+  static const double breakpointMobile = 600;
+  static const double breakpointTablet = 900;
+  static const double breakpointDesktop = 1200;
+
+  static bool isMobile(BuildContext context) =>
+      MediaQuery.sizeOf(context).width < breakpointMobile;
+  static bool isTablet(BuildContext context) {
+    final w = MediaQuery.sizeOf(context).width;
+    return w >= breakpointMobile && w < breakpointDesktop;
+  }
+  static bool isDesktop(BuildContext context) =>
+      MediaQuery.sizeOf(context).width >= breakpointDesktop;
+
+  /// Responsive grid column count.
+  static int gridColumns(BuildContext context) {
+    final w = MediaQuery.sizeOf(context).width;
+    if (w >= breakpointDesktop) return 3;
+    if (w >= breakpointMobile) return 2;
+    return 1;
+  }
 
   static ThemeData dark() {
     final base = ColorScheme.fromSeed(
-      seedColor: _seed,
+      seedColor: seed,
       brightness: Brightness.dark,
     );
 
     final colorScheme = base.copyWith(
-      surfaceContainerLowest: _surfaceLowest,
-      surfaceContainerLow: _surfaceLow,
-      surfaceContainer: _surface,
-      surfaceContainerHigh: _surfaceHigh,
-      surfaceContainerHighest: _surfaceHighest,
+      surfaceContainerLowest: surfaceLowest,
+      surfaceContainerLow: surfaceLow,
+      surfaceContainer: surface,
+      surfaceContainerHigh: surfaceHigh,
+      surfaceContainerHighest: surfaceHighest,
     );
 
     final textTheme = GoogleFonts.plusJakartaSansTextTheme(
@@ -46,13 +69,22 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
-      scaffoldBackgroundColor: _bg,
+      scaffoldBackgroundColor: bg,
       textTheme: textTheme,
       splashFactory: InkSparkle.splashFactory,
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
+        },
+      ),
 
       // ── Cards ──
       cardTheme: CardThemeData(
-        color: _surfaceHigh,
+        color: surfaceHigh,
         elevation: 0,
         shadowColor: colorScheme.primary.withValues(alpha: 0.18),
         shape: RoundedRectangleBorder(
@@ -101,7 +133,7 @@ class AppTheme {
       // ── Inputs ──
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: _surfaceHighest.withValues(alpha: 0.85),
+        fillColor: surfaceHighest.withValues(alpha: 0.85),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
@@ -121,9 +153,9 @@ class AppTheme {
 
       // ── Chips ──
       chipTheme: ChipThemeData(
-        backgroundColor: _surfaceHighest,
+        backgroundColor: surfaceHighest,
         selectedColor: colorScheme.primaryContainer,
-        disabledColor: _surface,
+        disabledColor: surface,
         labelStyle: textTheme.labelLarge,
         secondaryLabelStyle: textTheme.labelMedium,
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -139,9 +171,37 @@ class AppTheme {
         thickness: 1,
       ),
 
-      // ── Bottom Navigation ──
+      // ── Navigation bar (bottom, mobile) ──
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: surfaceLow,
+        indicatorColor: colorScheme.primary.withValues(alpha: 0.15),
+        elevation: 0,
+        height: 68,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        labelTextStyle: WidgetStatePropertyAll(
+          textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+        ),
+      ),
+
+      // ── Navigation rail (tablet/desktop) ──
+      navigationRailTheme: NavigationRailThemeData(
+        backgroundColor: surfaceLow,
+        indicatorColor: colorScheme.primary.withValues(alpha: 0.15),
+        elevation: 0,
+        selectedLabelTextStyle: textTheme.labelSmall?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: colorScheme.primary,
+        ),
+        unselectedLabelTextStyle: textTheme.labelSmall?.copyWith(
+          color: colorScheme.onSurfaceVariant,
+        ),
+        selectedIconTheme: IconThemeData(color: colorScheme.primary),
+        unselectedIconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
+      ),
+
+      // ── Bottom Navigation (legacy) ──
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
-        backgroundColor: _surfaceLow,
+        backgroundColor: surfaceLow,
         selectedItemColor: colorScheme.primary,
         unselectedItemColor: colorScheme.onSurfaceVariant,
         type: BottomNavigationBarType.fixed,
@@ -170,7 +230,7 @@ class AppTheme {
       // ── Progress indicators ──
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: colorScheme.primary,
-        circularTrackColor: _surfaceHighest,
+        circularTrackColor: surfaceHighest,
       ),
 
       // ── Snackbar ──
@@ -188,7 +248,7 @@ class AppTheme {
       dropdownMenuTheme: DropdownMenuThemeData(
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: _surfaceHighest,
+          fillColor: surfaceHighest,
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           border:

@@ -1,6 +1,7 @@
 """
-Clip Pusher - Continuously pushes pre-generated chunks to RTMP server
-Creates a never-ending live stream from pre-generated video chunks with continuous background audio.
+Clip Pusher - Continuously emits an HLS live stream from pre-generated chunks.
+Uses ffmpeg concat demuxer for seamless chunk transitions, writing directly to
+an HLS directory served by nginx. No RTMP/SRS in the path.
 """
 
 import glob
@@ -11,13 +12,24 @@ import re
 import subprocess
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 STREAM_STATS_FILENAME = ".stream_stats.json"
 CHUNKS_CREATED_FILENAME = ".chunks_created_total"
 PLAY_COUNTS_FILENAME = ".play_counts.json"
-# Legacy stats stored only chunk counts; convert to estimated seconds for fairness until real seconds accrue.
 LEGACY_CHUNK_SECONDS_ESTIMATE = 120.0
+CONCAT_FILE_PATH = '/tmp/stream_concat.txt'
+
+# ── Idle auto-pause ───────────────────────────────────────────────
+# After this many seconds of no client activity (HLS playlist/segment
+# requests pinged from nginx, or explicit /api/wake), ffmpeg is stopped
+# to save CPU/GPU. Waking restarts the concat pass.
+IDLE_TIMEOUT_SEC = int(os.getenv('IDLE_TIMEOUT_SEC', '300'))
+
+# ── HLS output tuning ─────────────────────────────────────────────
+HLS_SEGMENT_SECONDS = 6     # target segment duration
+HLS_LIST_SIZE       = 30    # sliding window (~180s of live edge) — big buffer so skip/audio-skip gaps hide inside TV player buffer
+HLS_PLAYLIST_NAME   = 'stream.m3u8'
 
 # ── Output normalization ──────────────────────────────────────────
 OUTPUT_AUDIO_RATE    = 44100
@@ -38,17 +50,24 @@ def _find_audio_files(audio_folder: str) -> List[str]:
 
 
 class ClipPusher:
-    """Pushes random video clips + continuous background audio to RTMP."""
+    """Emits a continuous HLS live stream from pre-generated video clips plus
+    continuous background audio. Uses the ffmpeg concat demuxer to stitch
+    chunks seamlessly within a pass and append_list+discont_start across
+    restarts so TV clients keep polling the same m3u8 across skip/audio-skip."""
 
-    def __init__(self, chunk_folder: str, rtmp_url: str,
+    def __init__(self, chunk_folder: str, hls_dir: str,
                  audio_folder: Optional[str] = None,
                  stats_dir: Optional[str] = None):
         self.chunk_folder    = chunk_folder
-        self.rtmp_url        = rtmp_url
+        self.hls_dir         = hls_dir
         self.audio_folder    = audio_folder
-        # Persistent stats (hours played, chunks pushed/created) live here so they survive deployments
         self._stats_dir      = (stats_dir or chunk_folder).rstrip(os.sep)
         self._audio_files: List[str] = []
+        # Shuffled play queue: every track gets played exactly once per cycle
+        # before any repeats. Refilled (re-shuffled) once exhausted. This is
+        # how music players “shuffle” — fair to short and long tracks alike,
+        # unlike a least-total-seconds metric which over-picks short tracks.
+        self._audio_queue: List[str] = []
 
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -56,18 +75,35 @@ class ClipPusher:
         self._current_chunk_started_at: Optional[float] = None
         self._current_chunk_duration: Optional[float] = None
         self._current_audio  = None
-        self._persistent_audio_path: Optional[str] = None  # same track across chunks
-        self._persistent_audio_duration: Optional[float] = None  # seconds
-        self._audio_position: float = 0.0  # position within track (0..duration), so next chunk continues from here
+        self._persistent_audio_path: Optional[str] = None
+        self._persistent_audio_duration: Optional[float] = None
+        self._audio_position: float = 0.0
         self._chunks_pushed  = 0
-        self._total_seconds_streamed: float = 0.0  # persisted, survives restarts
+        self._total_seconds_streamed: float = 0.0
         self._errors         = 0
         self._last_error: Optional[str] = None
         self._streamer_process: Optional[subprocess.Popen] = None
         self._play_chunk_next: Optional[str] = None
         self._play_chunk_lock = threading.Lock()
-        # When skip_to_next() runs, it already advances _audio_position; post-_stream_chunk must not add again.
-        self._audio_advance_done_for_this_chunk: bool = False
+
+        # Idle auto-pause state. Start in paused mode so ffmpeg only spins
+        # up once a client actually asks for the stream (via /api/wake or
+        # an HLS request mirrored by nginx).
+        self._last_activity_ts: float = time.time()
+        self._paused: bool = True
+        self._idle_timeout_sec: int = IDLE_TIMEOUT_SEC
+
+        # Concat-pass state
+        self._pass_chunks: List[Tuple[str, float]] = []      # [(path, duration), ...]
+        self._pass_cumulative: List[float] = []               # [0, d0, d0+d1, ...]
+        self._pass_start_time: Optional[float] = None
+        self._interrupt_reason: Optional[str] = None          # 'skip', 'play_chunk', 'audio_skip'
+        self._interrupt_lock = threading.Lock()
+
+        # Systemic-failure detection: count consecutive loop iterations where
+        # we saw chunks on disk but none validated. This catches silent bugs
+        # (e.g. broken ffprobe) that would otherwise leave us idle forever.
+        self._consecutive_empty_validations = 0
 
         self._load_stream_stats()
 
@@ -88,11 +124,15 @@ class ClipPusher:
         if self._running:
             print("Clip pusher already running")
             return
+        try:
+            os.makedirs(self.hls_dir, exist_ok=True)
+        except OSError as e:
+            print(f"Warning: could not create HLS dir {self.hls_dir}: {e}")
         self._running = True
         self._thread  = threading.Thread(target=self._push_loop,
                                          daemon=True, name="clip-pusher")
         self._thread.start()
-        print(f"Clip pusher started → {self.rtmp_url}")
+        print(f"Clip pusher started → HLS {self.hls_dir}/{HLS_PLAYLIST_NAME}")
 
     def stop(self):
         self._running = False
@@ -207,8 +247,14 @@ class ClipPusher:
         return f'{m:d}:{s2:02d}'
 
     def _extract_video_id(self, path: str) -> Optional[str]:
-        """Extract 11-char YouTube video ID from path (e.g. .../UCxxx/abc123.mp4 -> abc123)."""
+        """Extract 11-char YouTube video ID from path.
+        Supports Pinchflat format: 'Title [video_id].mp4' and TubeArchivist legacy: 'video_id.mp4'."""
         stem = os.path.splitext(os.path.basename(path))[0]
+        # Pinchflat: "Title [video_id]"
+        m = re.search(r'\[([a-zA-Z0-9_-]{11})\]', stem)
+        if m:
+            return m.group(1)
+        # TubeArchivist legacy: stem IS the video_id
         if stem and len(stem) == 11 and stem.replace('-', '').replace('_', '').isalnum():
             return stem
         return None
@@ -300,7 +346,8 @@ class ClipPusher:
         hours_played = round(self._total_seconds_streamed / 3600, 2) if self._total_seconds_streamed else 0
         return {
             'running':                   self._running,
-            'rtmp_url':                  self.rtmp_url,
+            'hls_dir':                   self.hls_dir,
+            'hls_playlist':              os.path.join(self.hls_dir, HLS_PLAYLIST_NAME),
             'chunks_pushed':             self._chunks_pushed,
             'total_seconds_streamed':    round(self._total_seconds_streamed, 1),
             'hours_played':              hours_played,
@@ -317,60 +364,29 @@ class ClipPusher:
         }
 
     def skip_to_next(self) -> bool:
-        """Stop the current chunk so the loop advances to the next one. Returns True if a stream was running."""
-        if self._streamer_process and self._streamer_process.poll() is None:
-            # Advance audio position by how long this chunk actually played, so next chunk continues from there.
-            # Only set the flag when we applied it here — otherwise post-_stream_chunk still advances once.
-            self._audio_advance_done_for_this_chunk = False
-            if self._current_chunk_started_at and self._persistent_audio_duration and self._persistent_audio_duration > 0:
-                actual = time.time() - self._current_chunk_started_at
-                self._audio_position = (self._audio_position + actual) % self._persistent_audio_duration
-                self._audio_advance_done_for_this_chunk = True
-            try:
-                self._streamer_process.terminate()
-                self._streamer_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._streamer_process.kill()
-            except Exception:
-                pass
-            return True
-        return False
+        """Stop the current concat pass so the loop reshuffles and starts fresh."""
+        with self._interrupt_lock:
+            self._interrupt_reason = 'skip'
+        return self._terminate_streamer()
 
     def skip_to_next_audio(self) -> bool:
-        """Stop current stream and switch to the next audio track. Returns True if a stream was running."""
-        if self._streamer_process and self._streamer_process.poll() is None:
-            # Pre-select next audio before terminating so status/refresh shows it immediately
-            if self._audio_files:
-                # Least-played among tracks other than current (fair rotation).
-                next_audio = self._get_next_audio(exclude_basename=self._current_audio)
-                self._persistent_audio_path = next_audio
-                self._audio_position = 0.0
-                if self._persistent_audio_path:
-                    try:
-                        out = subprocess.check_output(
-                            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                             '-of', 'default=noprint_wrappers=1:nokey=1', self._persistent_audio_path]
-                        )
-                        self._persistent_audio_duration = float(out.decode('utf-8').strip())
-                    except Exception:
-                        self._persistent_audio_duration = 3600.0
-                else:
-                    self._persistent_audio_duration = None
+        """Stop current stream and switch to the next audio track."""
+        if self._audio_files:
+            next_audio = self._get_next_audio(exclude_basename=self._current_audio)
+            self._persistent_audio_path = next_audio
+            self._audio_position = 0.0
+            if self._persistent_audio_path:
+                self._persistent_audio_duration = self._probe_duration(self._persistent_audio_path) or 3600.0
+                self._current_audio = os.path.basename(self._persistent_audio_path)
             else:
-                self._persistent_audio_path = None
+                self._persistent_audio_duration = None
                 self._current_audio = None
-            try:
-                self._streamer_process.terminate()
-                self._streamer_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._streamer_process.kill()
-            except Exception:
-                pass
-            return True
-        return False
+        with self._interrupt_lock:
+            self._interrupt_reason = 'audio_skip'
+        return self._terminate_streamer()
 
     def play_chunk(self, chunk_name: str) -> bool:
-        """Queue a specific chunk to play next in the stream. Stops current chunk if running."""
+        """Queue a specific chunk to play next. Restarts the stream."""
         base = os.path.basename(chunk_name)
         if not base.endswith('.mp4'):
             return False
@@ -379,11 +395,13 @@ class ClipPusher:
             return False
         with self._play_chunk_lock:
             self._play_chunk_next = base
-        self.skip_to_next()
+        with self._interrupt_lock:
+            self._interrupt_reason = 'play_chunk'
+        self._terminate_streamer()
         return True
 
     def play_audio(self, audio_name: str) -> bool:
-        """Switch to a specific audio track. Stops current stream and restarts with the new track."""
+        """Switch to a specific audio track."""
         if not self._audio_files:
             return False
         name = os.path.basename(audio_name)
@@ -393,36 +411,106 @@ class ClipPusher:
         self._persistent_audio_path = match
         self._current_audio = os.path.basename(match)
         self._audio_position = 0.0
-        try:
-            out = subprocess.check_output(
-                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                 '-of', 'default=noprint_wrappers=1:nokey=1', match]
-            )
-            self._persistent_audio_duration = float(out.decode('utf-8').strip())
-        except Exception:
-            self._persistent_audio_duration = 3600.0
-        if self._streamer_process and self._streamer_process.poll() is None:
+        self._persistent_audio_duration = self._probe_duration(match) or 3600.0
+        with self._interrupt_lock:
+            self._interrupt_reason = 'audio_skip'
+        self._terminate_streamer()
+        return True
+
+    def _terminate_streamer(self) -> bool:
+        """Terminate the running ffmpeg process. Returns True if a process was running."""
+        proc = self._streamer_process
+        if proc and proc.poll() is None:
             try:
-                self._streamer_process.terminate()
-                self._streamer_process.wait(timeout=3)
+                proc.terminate()
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._streamer_process.kill()
+                proc.kill()
             except Exception:
                 pass
             return True
-        return True
+        return False
 
+    # ── Idle pause / wake ─────────────────────────────────────────
+
+    def mark_activity(self) -> None:
+        """Record a client interaction. Refreshes the idle timer; does NOT
+        unpause (use wake() for that). Called from nginx-mirrored HLS
+        requests on every playlist/segment fetch."""
+        self._last_activity_ts = time.time()
+
+    def wake(self) -> dict:
+        """Explicit wake. Marks activity AND clears the paused flag so the
+        push loop restarts ffmpeg. Idempotent — safe to call repeatedly."""
+        was_paused = self._paused
+        self._last_activity_ts = time.time()
+        self._paused = False
+        if was_paused:
+            print("Stream wake requested — resuming ffmpeg")
+        return {
+            'paused': False,
+            'was_paused': was_paused,
+            'last_activity_ts': self._last_activity_ts,
+        }
+
+    def get_idle_status(self) -> dict:
+        idle_sec = time.time() - self._last_activity_ts
+        return {
+            'paused': self._paused,
+            'idle_seconds': round(idle_sec, 1),
+            'idle_timeout_sec': self._idle_timeout_sec,
+            'seconds_until_pause': max(0, round(self._idle_timeout_sec - idle_sec, 1)) if not self._paused else 0,
+        }
     # ── Internal ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _probe_duration(path: str) -> Optional[float]:
+        """Get media duration in seconds via ffprobe. Returns None on failure."""
+        try:
+            out = subprocess.check_output(
+                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', path],
+                stderr=subprocess.DEVNULL, timeout=10
+            )
+            return float(out.decode('utf-8').strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _validate_chunk(path: str) -> Tuple[bool, float]:
+        """Check chunk has a video stream and return its duration. Returns (valid, duration_sec)."""
+        try:
+            out = subprocess.check_output(
+                ['ffprobe', '-v', 'error',
+                 '-select_streams', 'v:0',
+                 '-show_entries', 'stream=codec_type',
+                 '-show_entries', 'format=duration',
+                 '-of', 'json', path],
+                stderr=subprocess.DEVNULL, timeout=10
+            )
+            data = json.loads(out.decode('utf-8'))
+            streams = data.get('streams', [])
+            if not streams or streams[0].get('codec_type') != 'video':
+                return False, 0.0
+            dur = float(data.get('format', {}).get('duration', 0))
+            return dur > 0, dur
+        except Exception:
+            return False, 0.0
+
     def _audio_play_count(self, basename: str) -> float:
-        """Fairness weight = total seconds streamed (legacy int entries estimated as chunks * avg length)."""
+        """Fairness weight = total seconds streamed."""
         data = self._load_play_counts()
         audio = data.get('audio', {})
         raw = audio.get(basename, 0)
         return float(self._coerce_audio_entry(raw)['seconds'])
 
     def _pick_audio_least_played(self, pool: List[str]) -> Optional[str]:
-        """Pick a file from pool with minimum recorded play count; random tie-break."""
+        """Pick a file from pool with minimum recorded play count; random tie-break.
+
+        Kept for backward compatibility / stats display. Not used for the
+        next-track decision anymore — see _get_next_audio for the fair
+        round-robin shuffle queue.
+        """
         if not pool:
             return None
         scores = [(self._audio_play_count(os.path.basename(p)), p) for p in pool]
@@ -432,17 +520,48 @@ class ClipPusher:
         self._current_audio = os.path.basename(chosen)
         return chosen
 
+    def _refill_audio_queue(self, avoid_first: Optional[str] = None) -> None:
+        """Reshuffle all audio files into the play queue. Optionally make sure
+        the just-played track isn't the first in the new cycle (so we don't
+        get track A immediately followed by track A again across cycles)."""
+        if not self._audio_files:
+            self._audio_queue = []
+            return
+        queue = list(self._audio_files)
+        random.shuffle(queue)
+        if (avoid_first and len(queue) > 1
+                and os.path.basename(queue[0]) == avoid_first):
+            # Swap with a random later position to avoid back-to-back repeat.
+            swap_idx = random.randrange(1, len(queue))
+            queue[0], queue[swap_idx] = queue[swap_idx], queue[0]
+        self._audio_queue = queue
+
     def _get_next_audio(self, exclude_basename: Optional[str] = None) -> Optional[str]:
-        """Pick next track: least-played among library (or among pool excluding current)."""
+        """Pop the next track off the shuffled queue. Refills the queue with a
+        fresh shuffle once exhausted, so every audio file plays exactly once
+        per cycle before any repeats. Length-fair: short and long tracks are
+        selected with equal probability per cycle.
+        """
         if not self._audio_files:
             return None
-        pool = [p for p in self._audio_files if os.path.basename(p) != exclude_basename]
-        if not pool:
-            pool = list(self._audio_files)
-        return self._pick_audio_least_played(pool)
+        # Drop any queue entries for files no longer on disk (rare, e.g.
+        # operator removed a file mid-cycle).
+        self._audio_queue = [p for p in self._audio_queue if p in self._audio_files]
+        if not self._audio_queue:
+            self._refill_audio_queue(avoid_first=exclude_basename)
+        # If the front of the queue is the track we want to skip past (e.g.
+        # user pressed audio-skip while it was playing), rotate it to the
+        # back so it still plays this cycle, just later.
+        if (exclude_basename
+                and len(self._audio_queue) > 1
+                and os.path.basename(self._audio_queue[0]) == exclude_basename):
+            self._audio_queue.append(self._audio_queue.pop(0))
+        chosen = self._audio_queue.pop(0)
+        self._current_audio = os.path.basename(chosen)
+        return chosen
 
     def _rotate_audio_after_full_chunk_round(self) -> None:
-        """After playing a full shuffled pass (no push-chunk break), switch to another least-played track."""
+        """After a full shuffle pass, switch to another least-played track."""
         if not self._audio_files:
             return
         cur = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
@@ -452,207 +571,320 @@ class ClipPusher:
         self._persistent_audio_path = nxt
         self._current_audio = os.path.basename(nxt)
         self._audio_position = 0.0
-        try:
-            out = subprocess.check_output(
-                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                 '-of', 'default=noprint_wrappers=1:nokey=1', nxt]
-            )
-            self._persistent_audio_duration = float(out.decode('utf-8').strip())
-        except Exception:
-            self._persistent_audio_duration = 3600.0
+        self._persistent_audio_duration = self._probe_duration(nxt) or 3600.0
 
-    def _stream_chunk(self, chunk_path: str, audio_start_sec: float = 0.0):
-        """
-        Stream a single chunk to RTMP with background audio.
-        audio_start_sec = position in track so playback continues across chunks.
-        We use concat filter: [audio from start_sec to end] + [audio looped from 0] so the seek is respected.
-        """
-        audio_file = self._persistent_audio_path
-        seek_sec = round(audio_start_sec, 2) if audio_start_sec > 0.01 else 0.0
+    def _write_concat_file(self, chunk_paths: List[str]) -> str:
+        """Write ffmpeg concat demuxer file. Returns path."""
+        with open(CONCAT_FILE_PATH, 'w') as f:
+            for path in chunk_paths:
+                safe = path.replace("'", "'\\''")
+                f.write(f"file '{safe}'\n")
+        return CONCAT_FILE_PATH
 
+    def _build_concat_cmd(self, concat_path: str, audio_file: Optional[str],
+                          audio_seek: float) -> List[str]:
+        """Build ffmpeg command that writes an HLS live stream directly to the
+        shared hls_dir. Uses append_list + discont_start so restarts (skip,
+        audio_skip, play_chunk, pass-rollover) append to the same playlist and
+        insert a discontinuity tag rather than ending the stream."""
         cmd = [
             'ffmpeg', '-y',
             '-hide_banner', '-nostats', '-loglevel', 'warning',
-
-            # Input 0: video chunk
             '-re',
-            '-i', chunk_path,
+            '-f', 'concat', '-safe', '0',
+            '-i', concat_path,
         ]
-
         if audio_file:
-            # Input 1: audio from seek_sec to end (once). Input 2: same file looped from 0.
-            # Concat gives: [position..end] then [0..end, 0..end, ...] = continuous from position.
-            if seek_sec > 0:
-                cmd.extend([
-                    '-ss', str(seek_sec),
-                    '-i', audio_file,
-                    '-stream_loop', '-1',
-                    '-i', audio_file,
-                ])
-                # [1:a] = tail from seek, [2:a] = full loop; concat so we start at position then loop
-                cmd.extend([
-                    '-filter_complex', '[1:a][2:a]concat=n=2:v=0:a=1[a]',
-                    '-map', '0:v:0', '-map', '[a]',
-                ])
-            else:
-                cmd.extend([
-                    '-stream_loop', '-1',
-                    '-i', audio_file,
-                ])
-                cmd.extend(['-map', '0:v:0', '-map', '1:a:0'])
+            if audio_seek > 0.01:
+                cmd.extend(['-ss', str(round(audio_seek, 2))])
+            cmd.extend(['-stream_loop', '-1', '-i', audio_file])
+            cmd.extend(['-map', '0:v:0', '-map', '1:a:0'])
         else:
             cmd.extend([
                 '-f', 'lavfi',
                 '-i', f'anullsrc=channel_layout=stereo:sample_rate={OUTPUT_AUDIO_RATE}',
             ])
             cmd.extend(['-map', '0:v:0', '-map', '1:a:0'])
-            
-        # Determine chunk duration to stop audio properly
-        duration_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', chunk_path]
-        try:
-            chunk_duration = float(subprocess.check_output(duration_cmd).decode('utf-8').strip())
-            # Add a tiny buffer so it definitely reaches the end of the video.
-            # Important: we must advance _audio_position using the same duration we ask ffmpeg to run.
-            chunk_duration += 0.5
-            self._current_chunk_duration = chunk_duration
-        except Exception:
-            # Fallback 5 mins (keep _current_chunk_duration consistent with ffmpeg -t)
-            chunk_duration = 300.0
-            chunk_duration += 0.5
-            self._current_chunk_duration = chunk_duration
+
+        playlist = os.path.join(self.hls_dir, HLS_PLAYLIST_NAME)
+        segment_pattern = os.path.join(self.hls_dir, 'seg%d.ts')
 
         cmd.extend([
-            '-c:v', 'copy',             # remux H264 natively, zero CPU!
+            '-c:v', 'copy',
             '-c:a', 'aac',
             '-ar', str(OUTPUT_AUDIO_RATE),
             '-ac', str(OUTPUT_AUDIO_CHANNELS),
             '-b:a', OUTPUT_AUDIO_BITRATE,
-            '-t', str(chunk_duration),  # Stop when chunk ends
-            '-f', 'flv',
-            '-flvflags', 'no_duration_filesize',
-            self.rtmp_url,
+            '-shortest',
+            '-fflags', '+genpts',
+            '-f', 'hls',
+            '-hls_time', str(HLS_SEGMENT_SECONDS),
+            '-hls_list_size', str(HLS_LIST_SIZE),
+            '-hls_flags', 'append_list+delete_segments+omit_endlist+independent_segments+discont_start+program_date_time+temp_file',
+            '-hls_segment_type', 'mpegts',
+            '-hls_allow_cache', '0',
+            '-hls_start_number_source', 'datetime',
+            '-hls_segment_filename', segment_pattern,
+            playlist,
         ])
+        return cmd
 
-        print(f"Streaming chunk: {os.path.basename(chunk_path)} → {self.rtmp_url}" + (f" (audio from {seek_sec}s)" if seek_sec > 0 and audio_file else ""))
-        
-        self._streamer_process = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
+    def _chunk_index_at(self, elapsed: float) -> int:
+        """Given elapsed seconds, return index into current pass chunks."""
+        for i in range(len(self._pass_cumulative) - 1):
+            if elapsed < self._pass_cumulative[i + 1]:
+                return i
+        return max(0, len(self._pass_chunks) - 1)
 
-        while self._running and self._streamer_process.poll() is None:
-            time.sleep(1)
-
-        stderr_out = None
-        if self._streamer_process.stderr:
-            try:
-                stderr_out = self._streamer_process.stderr.read().decode('utf-8', errors='replace')
-            except Exception:
-                pass
-            
-        if self._running and self._streamer_process.poll() is not None:
-            if self._streamer_process.returncode != 0:
-                print(f"Streamer process exited with code {self._streamer_process.returncode}")
-                if stderr_out:
-                    print(f"ffmpeg stderr: {stderr_out[:500]}")
-                self._errors += 1
-            self._chunks_pushed += 1
+    def _ensure_audio(self) -> None:
+        """Ensure an audio track is selected; pick one if needed."""
+        if not self._audio_files:
+            return
+        if self._persistent_audio_path and os.path.isfile(self._persistent_audio_path):
+            return
+        self._persistent_audio_path = self._get_next_audio(exclude_basename=None)
+        self._current_audio = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
+        self._audio_position = 0.0
+        if self._persistent_audio_path:
+            self._persistent_audio_duration = self._probe_duration(self._persistent_audio_path) or 3600.0
 
     def _push_loop(self):
-        print("Clip pusher control loop started")
-        time.sleep(3)   # let nginx-rtmp warm up
+        print("Clip pusher control loop started (HLS output)")
+        time.sleep(3)
 
         while self._running:
-            chunks = sorted([
+            # Idle pause: if no client has touched the stream in a while,
+            # don't spin up ffmpeg — sit here and wait for a wake() or an
+            # nginx-mirrored HLS ping. Cheap busy-wait at 1Hz.
+            if self._paused:
+                time.sleep(1)
+                continue
+
+            # Scan and validate chunks
+            raw_chunks = sorted([
                 os.path.join(self.chunk_folder, f)
                 for f in os.listdir(self.chunk_folder)
                 if f.endswith('.mp4') and not f.startswith('chunk_temp')
             ])
-            
-            if not chunks:
-                print(f"No chunks found in {self.chunk_folder}. Waiting...")
+            if not raw_chunks:
+                print(f"No chunks in {self.chunk_folder}. Waiting...")
                 time.sleep(10)
                 continue
-                
-            random.shuffle(chunks)
 
+            # Validate chunks (check video stream exists, get durations)
+            valid_chunks: List[str] = []
+            durations: List[float] = []
+            for chunk in raw_chunks:
+                ok, dur = self._validate_chunk(chunk)
+                if ok and dur > 0:
+                    valid_chunks.append(chunk)
+                    durations.append(dur)
+                else:
+                    print(f"Skipping invalid chunk: {os.path.basename(chunk)}")
+
+            if not valid_chunks:
+                # Systemic-failure guard: if we saw raw chunks on disk but NONE
+                # validated for multiple consecutive cycles, something is
+                # broken upstream of chunks (e.g. ffprobe in the container).
+                # Sitting idle here is the exact failure mode that left the
+                # stream stale for 2 days on 2026-04-18. Exit loudly so the
+                # kubelet restarts the pod and the liveness probe flags it.
+                self._consecutive_empty_validations += 1
+                print(
+                    f"No valid chunks. raw_chunks={len(raw_chunks)} "
+                    f"empty_cycles={self._consecutive_empty_validations}"
+                )
+                if (len(raw_chunks) >= 10
+                        and self._consecutive_empty_validations >= 3):
+                    msg = (
+                        f"FATAL: {len(raw_chunks)} raw chunks on disk but "
+                        f"0 validated for {self._consecutive_empty_validations} "
+                        f"consecutive cycles — likely broken ffprobe or "
+                        f"systemic chunk corruption. Exiting so kubelet "
+                        f"can restart the pod."
+                    )
+                    print(msg, flush=True)
+                    # Exit the whole process (not just the thread) so the
+                    # liveness probe / kubelet handles recovery.
+                    os._exit(42)
+                time.sleep(10)
+                continue
+
+            # Reset the counter — we have valid chunks again.
+            self._consecutive_empty_validations = 0
+
+            # Shuffle
+            combined = list(zip(valid_chunks, durations))
+            random.shuffle(combined)
+            valid_chunks, durations = [list(x) for x in zip(*combined)]
+
+            # Handle queued play_chunk — put it first
             with self._play_chunk_lock:
                 next_name = self._play_chunk_next
                 if next_name:
                     self._play_chunk_next = None
                     full = os.path.join(self.chunk_folder, next_name)
-                    if full in chunks:
-                        chunks.remove(full)
-                        chunks.insert(0, full)
+                    for i, c in enumerate(valid_chunks):
+                        if c == full:
+                            valid_chunks.pop(i)
+                            durations.pop(i)
+                            break
+                    ok, dur = self._validate_chunk(full)
+                    if ok and dur > 0:
+                        valid_chunks.insert(0, full)
+                        durations.insert(0, dur)
 
-            # Pick one audio track for this pass; rotate to another least-played track after a full round
-            # (not when user queued a chunk — that must keep the same track/position).
-            if self._audio_files:
-                if self._persistent_audio_path is None or not os.path.isfile(self._persistent_audio_path):
-                    self._persistent_audio_path = self._get_next_audio(exclude_basename=None)
-                    self._current_audio = os.path.basename(self._persistent_audio_path) if self._persistent_audio_path else None
-                    self._audio_position = 0.0
-                    if self._persistent_audio_path:
-                        try:
-                            out = subprocess.check_output(
-                                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                                 '-of', 'default=noprint_wrappers=1:nokey=1', self._persistent_audio_path]
-                            )
-                            self._persistent_audio_duration = float(out.decode('utf-8').strip())
-                        except Exception as e:
-                            self._persistent_audio_duration = 3600.0
-                            print(f"Warning: ffprobe duration failed for {self._persistent_audio_path}: {e}. Using 3600s fallback.")
+            # Ensure audio is ready
+            self._ensure_audio()
 
-            broke_for_queued_chunk = False
-            for chunk in chunks:
-                if not self._running:
-                    break
+            # Build cumulative timeline
+            cumulative = [0.0]
+            for d in durations:
+                cumulative.append(cumulative[-1] + d)
+            total_duration = cumulative[-1]
 
-                self._current_chunk = os.path.basename(chunk)
-                self._current_chunk_started_at = time.time()
-                self._current_chunk_duration = None  # set in _stream_chunk after ffprobe
-                self._audio_advance_done_for_this_chunk = False
-                audio_start = self._audio_position
-                if audio_start > 0 and self._persistent_audio_duration:
-                    print(f"Resuming audio at {audio_start:.1f}s / {self._persistent_audio_duration:.1f}s")
-                try:
-                    self._stream_chunk(chunk, audio_start_sec=audio_start)
-                except Exception as exc:
-                    self._last_error = str(exc)
-                    self._errors += 1
-                    print(f"Stream loop error: {exc}")
-                    time.sleep(5)
-                # Advance audio timeline. If skip_to_next() ran, it already updated _audio_position — do not add again.
-                skipped_audio_advance = self._audio_advance_done_for_this_chunk
-                if skipped_audio_advance:
-                    self._audio_advance_done_for_this_chunk = False
-                    advance = time.time() - self._current_chunk_started_at
-                elif self._current_chunk_duration is not None and self._streamer_process and self._streamer_process.returncode == 0:
-                    advance = self._current_chunk_duration
-                else:
-                    advance = time.time() - self._current_chunk_started_at
+            self._pass_chunks = list(zip(valid_chunks, durations))
+            self._pass_cumulative = cumulative
 
-                if self._persistent_audio_duration and self._persistent_audio_duration > 0 and not skipped_audio_advance:
-                    self._audio_position = (self._audio_position + advance) % self._persistent_audio_duration
+            # Clear any previous interrupt
+            with self._interrupt_lock:
+                self._interrupt_reason = None
 
-                self._total_seconds_streamed += advance
-                self._save_stream_stats()
-                self._record_play_count(chunk, self._current_audio, advance)
+            # Write concat file and build command
+            concat_path = self._write_concat_file(valid_chunks)
+            audio_file = self._persistent_audio_path
+            audio_seek = self._audio_position
+            cmd = self._build_concat_cmd(concat_path, audio_file, audio_seek)
 
-                # Cleanup process before next iteration
-                if self._streamer_process and self._streamer_process.poll() is None:
-                    self._streamer_process.terminate()
-                    try:
-                        self._streamer_process.wait(timeout=5)
-                    except Exception:
-                        self._streamer_process.kill()
+            print(f"Starting concat pass: {len(valid_chunks)} chunks, ~{int(total_duration)}s total")
+            if audio_file and audio_seek > 0:
+                print(f"  Audio: {self._current_audio} from {audio_seek:.1f}s / {self._persistent_audio_duration:.1f}s")
 
-                with self._play_chunk_lock:
-                    if self._play_chunk_next:
-                        broke_for_queued_chunk = True
+            # Launch ffmpeg.
+            # IMPORTANT: stderr MUST NOT be subprocess.PIPE here — we don't drain it while
+            # ffmpeg runs, and the 64KB pipe buffer fills up on long sessions (-loglevel
+            # warning emits on every concat boundary), causing ffmpeg to block on write
+            # indefinitely. That manifests as ffmpeg alive at 0% CPU with SRS seeing no
+            # publisher (the exact symptom we hit). Use DEVNULL.
+            self._pass_start_time = time.time()
+            self._streamer_process = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+            prev_chunk_idx = -1
+            last_stats_save = time.time()
+            # Watchdog: if chunk_idx doesn't advance for this many seconds past the
+            # expected chunk duration, ffmpeg is stalled — kill it and restart the pass.
+            STALL_GRACE = 120  # seconds
+            last_progress_time = time.time()
+
+            while self._running and self._streamer_process.poll() is None:
+                elapsed = time.time() - self._pass_start_time
+                chunk_idx = self._chunk_index_at(elapsed)
+
+                # Record play counts when crossing chunk boundaries
+                if chunk_idx > prev_chunk_idx and prev_chunk_idx >= 0:
+                    for ci in range(prev_chunk_idx, min(chunk_idx, len(self._pass_chunks))):
+                        p, d = self._pass_chunks[ci]
+                        self._chunks_pushed += 1
+                        self._total_seconds_streamed += d
+                        self._record_play_count(p, self._current_audio, d)
+                    last_progress_time = time.time()
+                prev_chunk_idx = chunk_idx
+
+                # Stall watchdog: if we haven't crossed a chunk boundary in
+                # (current_chunk_duration + STALL_GRACE) seconds, ffmpeg is hung.
+                if chunk_idx < len(self._pass_chunks):
+                    expected_dur = self._pass_chunks[chunk_idx][1]
+                    if time.time() - last_progress_time > expected_dur + STALL_GRACE:
+                        print(f"Stream stalled (no progress in {int(time.time() - last_progress_time)}s on chunk {chunk_idx}); killing ffmpeg")
+                        self._errors += 1
+                        self._last_error = "stall watchdog triggered"
+                        self._terminate_streamer()
                         break
 
-            # Rotate track only after a full pass while still running (not mid-shutdown).
-            if not broke_for_queued_chunk and self._running and self._audio_files:
-                self._rotate_audio_after_full_chunk_round()
+                # Update current-chunk state
+                if chunk_idx < len(self._pass_chunks):
+                    p, d = self._pass_chunks[chunk_idx]
+                    self._current_chunk = os.path.basename(p)
+                    self._current_chunk_started_at = self._pass_start_time + self._pass_cumulative[chunk_idx]
+                    self._current_chunk_duration = d
+
+                # Update audio position for status display
+                if self._persistent_audio_duration and self._persistent_audio_duration > 0:
+                    self._audio_position = (audio_seek + elapsed) % self._persistent_audio_duration
+
+                # Save stats periodically
+                now = time.time()
+                if now - last_stats_save >= 30:
+                    self._save_stream_stats()
+                    last_stats_save = now
+
+                # Check for interrupts
+                with self._interrupt_lock:
+                    if self._interrupt_reason:
+                        break
+
+                # Idle auto-pause: stop ffmpeg if no client activity recently.
+                if (time.time() - self._last_activity_ts) > self._idle_timeout_sec:
+                    print(
+                        f"Idle timeout: no client activity for "
+                        f"{int(time.time() - self._last_activity_ts)}s — pausing stream"
+                    )
+                    self._paused = True
+                    self._terminate_streamer()
+                    break
+
+                time.sleep(1)
+
+            # ── Post-process ──
+            actual_elapsed = time.time() - self._pass_start_time
+
+            # Update audio position
+            if self._persistent_audio_duration and self._persistent_audio_duration > 0:
+                self._audio_position = (audio_seek + actual_elapsed) % self._persistent_audio_duration
+
+            # Record stats for the last chunk that was playing
+            chunk_idx = self._chunk_index_at(actual_elapsed)
+            if chunk_idx >= 0 and chunk_idx < len(self._pass_chunks):
+                p, d = self._pass_chunks[chunk_idx]
+                chunk_elapsed = actual_elapsed - self._pass_cumulative[chunk_idx]
+                self._chunks_pushed += 1
+                self._total_seconds_streamed += max(0, min(chunk_elapsed, d))
+                self._record_play_count(p, self._current_audio, max(0, min(chunk_elapsed, d)))
+            # Also record any fully-completed chunks between prev_chunk_idx and chunk_idx
+            if prev_chunk_idx >= 0 and chunk_idx > prev_chunk_idx:
+                for ci in range(prev_chunk_idx, min(chunk_idx, len(self._pass_chunks))):
+                    cp, cd = self._pass_chunks[ci]
+                    self._chunks_pushed += 1
+                    self._total_seconds_streamed += cd
+                    self._record_play_count(cp, self._current_audio, cd)
+
+            self._save_stream_stats()
+
+            rc = self._streamer_process.returncode if self._streamer_process else None
+            if rc is not None and rc != 0:
+                print(f"Concat pass ended with code {rc}")
+                self._errors += 1
+                self._last_error = f"ffmpeg exit {rc}"
+
+            # Cleanup
+            if self._streamer_process and self._streamer_process.poll() is None:
+                self._terminate_streamer()
+
+            # Handle interrupt or completion
+            with self._interrupt_lock:
+                reason = self._interrupt_reason
+                self._interrupt_reason = None
+
+            if reason in ('skip', 'play_chunk', 'audio_skip'):
+                time.sleep(0.3)
+            elif reason is None and self._running:
+                # Full pass completed — rotate audio for next pass
+                if self._audio_files:
+                    self._rotate_audio_after_full_chunk_round()
+                time.sleep(0.5)
+            else:
+                time.sleep(3)
 
         print("Clip pusher loop ended")

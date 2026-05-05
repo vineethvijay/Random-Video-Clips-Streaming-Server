@@ -1,52 +1,25 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'src/screens/admin_screen.dart';
-import 'src/screens/app_shell.dart';
-import 'src/screens/home_screen.dart';
-import 'src/screens/stats_screen.dart';
-import 'src/services/streaming_api.dart';
+import 'src/routing/app_router.dart';
 import 'src/theme/app_theme.dart';
 
 void main() {
-  final api = StreamingApi.fromEnvironment();
-  runApp(RandomVideoStreamerApp(api: api));
+  runApp(const ProviderScope(child: RandomVideoStreamerApp()));
 }
 
 class RandomVideoStreamerApp extends StatelessWidget {
-  const RandomVideoStreamerApp({super.key, required this.api});
-
-  final StreamingApi api;
+  const RandomVideoStreamerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final router = GoRouter(
-      routes: [
-        ShellRoute(
-          builder: (context, state, child) => AppShell(child: child),
-          routes: [
-            GoRoute(
-              path: '/',
-              builder: (context, state) => HomeScreen(api: api),
-            ),
-            GoRoute(
-              path: '/admin',
-              builder: (context, state) => AdminScreen(api: api),
-            ),
-            GoRoute(
-              path: '/stats',
-              builder: (context, state) => StatsScreen(api: api),
-            ),
-          ],
-        ),
-      ],
-    );
-
     return MaterialApp.router(
-      routerConfig: router,
+      routerConfig: appRouter,
       title: 'Random Video Streamer',
       theme: AppTheme.dark(),
       debugShowCheckedModeBanner: false,
+      builder: (context, child) =>
+          SelectionArea(child: child ?? const SizedBox.shrink()),
     );
   }
 }

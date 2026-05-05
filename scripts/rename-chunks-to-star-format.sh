@@ -5,9 +5,8 @@
 # Usage: ./rename-chunks-to-star-format.sh [chunks_dir]
 #   chunks_dir: from CHUNK_FOLDER env, or first arg, or ./chunks
 #
-# On Proxmox (if CHUNK_FOLDER in .env differs from ./chunks):
+# Example:
 #   source .env 2>/dev/null; ./scripts/rename-chunks-to-star-format.sh
-#   or: ./scripts/rename-chunks-to-star-format.sh /root/HDD_INT/tube_archiver-chunks
 
 [ -f .env ] && set -a && source .env 2>/dev/null && set +a
 CHUNKS_DIR="${CHUNK_FOLDER:-${1:-./chunks}}"

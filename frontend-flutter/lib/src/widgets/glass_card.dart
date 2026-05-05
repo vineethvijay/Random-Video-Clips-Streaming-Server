@@ -3,7 +3,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 /// Frosted-glass container with optional gradient border glow.
-class GlassCard extends StatelessWidget {
+/// Enhanced with tap animation and inner shadow.
+class GlassCard extends StatefulWidget {
   const GlassCard({
     super.key,
     required this.child,
@@ -13,6 +14,8 @@ class GlassCard extends StatelessWidget {
     this.glowColor,
     this.padding,
     this.margin,
+    this.onTap,
+    this.tapAnimate = true,
   });
 
   final Widget child;
@@ -22,15 +25,24 @@ class GlassCard extends StatelessWidget {
   final Color? glowColor;
   final EdgeInsetsGeometry? padding;
   final EdgeInsetsGeometry? margin;
+  final VoidCallback? onTap;
+  final bool tapAnimate;
+
+  @override
+  State<GlassCard> createState() => _GlassCardState();
+}
+
+class _GlassCardState extends State<GlassCard> {
+  bool _pressed = false;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final glow = glowColor ?? cs.primary;
-    final radius = BorderRadius.circular(borderRadius);
+    final glow = widget.glowColor ?? cs.primary;
+    final radius = BorderRadius.circular(widget.borderRadius);
 
-    return Container(
-      margin: margin,
+    Widget card = Container(
+      margin: widget.margin,
       decoration: BoxDecoration(
         borderRadius: radius,
         boxShadow: [
@@ -44,12 +56,13 @@ class GlassCard extends StatelessWidget {
       child: ClipRRect(
         borderRadius: radius,
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+          filter: ImageFilter.blur(sigmaX: widget.blur, sigmaY: widget.blur),
           child: Container(
-            padding: padding ?? const EdgeInsets.all(16),
+            padding: widget.padding ?? const EdgeInsets.all(16),
             decoration: BoxDecoration(
               borderRadius: radius,
-              color: cs.surfaceContainerHigh.withValues(alpha: 0.65 + opacity),
+              color: cs.surfaceContainerHigh
+                  .withValues(alpha: 0.65 + widget.opacity),
               border: Border.all(
                 color: cs.outline.withValues(alpha: 0.2),
               ),
@@ -62,10 +75,29 @@ class GlassCard extends StatelessWidget {
                 ],
               ),
             ),
-            child: child,
+            child: widget.child,
           ),
         ),
       ),
     );
+
+    if (widget.onTap != null && widget.tapAnimate) {
+      card = GestureDetector(
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTapCancel: () => setState(() => _pressed = false),
+        onTap: widget.onTap,
+        child: AnimatedScale(
+          scale: _pressed ? 0.97 : 1.0,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: card,
+        ),
+      );
+    } else if (widget.onTap != null) {
+      card = GestureDetector(onTap: widget.onTap, child: card);
+    }
+
+    return card;
   }
 }

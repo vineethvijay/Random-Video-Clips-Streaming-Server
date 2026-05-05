@@ -12,6 +12,7 @@ import time
 import re
 import signal
 import sys
+import urllib.error
 import urllib.request
 from flask import Flask, jsonify, request, Response, send_file
 from flask_cors import CORS
@@ -33,7 +34,10 @@ TRIGGER_DIR = os.getenv('TRIGGER_DIR', '').strip() or None
 PORT = int(os.getenv('PORT', '8080'))
 EXTERNAL_PORT = int(os.getenv('EXTERNAL_PORT', str(PORT)))
 HLS_PORT = int(os.getenv('HLS_PORT', '8080'))
-RTMP_URL = os.getenv('RTMP_URL', 'rtmp://nginx-rtmp:1935/live/stream')
+# Shared dir where ffmpeg writes the HLS playlist + segments (served by nginx).
+HLS_DIR = os.getenv('HLS_DIR', '/hls').strip() or '/hls'
+# Public-facing playlist path as served by the ingress/nginx (e.g. /live/stream.m3u8).
+HLS_PATH = os.getenv('HLS_PATH', '/live/stream.m3u8').strip() or '/live/stream.m3u8'
 AUDIO_FOLDER = os.getenv('AUDIO_FOLDER', '')
 # Persistent stats dir (mount this volume so hours played / chunks created survive new deployments)
 STATS_DIR = os.getenv('STATS_DIR', '').strip() or None
@@ -44,16 +48,32 @@ PROJECT_ROOT = os.getenv('PROJECT_ROOT', '').strip() or None
 
 CRON_JOB_COMMENT = 'random-video-streamer chunk-gen'
 
+# Process start time — used by /api/stream-health startup grace period.
+_PROCESS_START_TS = time.time()
+
 # Initialize components
 print(f"Initializing Random Video Clips Streaming Server...")
 print(f"Chunk folder: {CHUNK_FOLDER}")
-print(f"RTMP URL: {RTMP_URL}")
+print(f"HLS dir: {HLS_DIR}")
 print(f"Audio folder: {AUDIO_FOLDER or '(none — video audio used)'}")
 print(f"Stats dir (persistent): {STATS_DIR or CHUNK_FOLDER}")
-print("Streaming mode: RTMP push (chunked stream)")
+print("Streaming mode: HLS (direct from chunks, no RTMP)")
+
+# Lock / stop files live in the trigger dir (shared emptyDir in K8s).
+# emptyDir auto-clears on pod restart so no stale-lock cleanup needed,
+# but we do it anyway for docker-compose or manual runs.
+_LOCK_DIR = TRIGGER_DIR or CHUNK_FOLDER
+for _stale in ('.generation_running', '.stop_generation'):
+    _stale_path = os.path.join(_LOCK_DIR, _stale)
+    if os.path.exists(_stale_path):
+        try:
+            os.remove(_stale_path)
+            print(f"Cleaned up stale {_stale}")
+        except OSError:
+            pass
 
 # Initialize clip pusher
-clip_pusher = ClipPusher(CHUNK_FOLDER, RTMP_URL,
+clip_pusher = ClipPusher(CHUNK_FOLDER, HLS_DIR,
                          audio_folder=AUDIO_FOLDER if AUDIO_FOLDER else None,
                          stats_dir=STATS_DIR)
 
@@ -493,8 +513,14 @@ MODEL_THUMBNAIL_CACHE_FILENAME = '.model_thumbnails.json'
 
 
 def _extract_video_id(path):
-    """Extract 11-char YouTube video ID from path (e.g. .../abc123.mp4 -> abc123)."""
+    """Extract 11-char YouTube video ID from path.
+    Supports Pinchflat format: 'Title [video_id].mp4' and TubeArchivist legacy: 'video_id.mp4'."""
     stem = os.path.splitext(os.path.basename(path))[0]
+    # Pinchflat: "Title [video_id]"
+    m = re.search(r'\[([a-zA-Z0-9_-]{11})\]', stem)
+    if m:
+        return m.group(1)
+    # TubeArchivist legacy: stem IS the video_id
     if stem and len(stem) == 11 and stem.replace('-', '').replace('_', '').isalnum():
         return stem
     return None
@@ -637,15 +663,14 @@ def api_stats():
 
 
 def _stream_url():
-    """Build HLS stream URL (respects X-Forwarded-Proto when behind HTTPS proxy)."""
-    if request.scheme == 'https':
-        return f"https://{request.host}/hls/stream.m3u8"
-    return f"http://{request.host.split(':')[0]}:{HLS_PORT}/hls/stream.m3u8"
+    """Build HLS stream URL served by the in-pod nginx (ffmpeg writes directly
+    to the shared HLS dir; nginx serves it at HLS_PATH)."""
+    return f"{request.scheme}://{request.host}{HLS_PATH}"
 
 
 @app.route('/iptv.m3u')
 def iptv_playlist():
-    """IPTV playlist for TV apps - points to nginx-rtmp HLS stream"""
+    """IPTV playlist for TV apps — points to the HLS live stream."""
     hls_url = _stream_url()
 
     playlist_content = f"""#EXTM3U
@@ -667,18 +692,19 @@ def status():
     """Get server status"""
     pusher_status = clip_pusher.get_status()
 
-    generation_in_progress = os.path.exists(os.path.join(CHUNK_FOLDER, '.generation_running'))
+    generation_in_progress = os.path.exists(os.path.join(_LOCK_DIR, '.generation_running'))
 
     status_data = {
         'server': 'running',
-        'mode': 'RTMP push (chunked stream)',
+        'mode': 'HLS (direct from chunks)',
         'stream_url': _stream_url(),
-        'rtmp_pusher': pusher_status,
+        'rtmp_pusher': pusher_status,  # retained key name for API back-compat
         'generation_in_progress': generation_in_progress,
         'config': {
             'chunk_folder': CHUNK_FOLDER,
             'port': EXTERNAL_PORT,
-            'rtmp_url': RTMP_URL
+            'hls_dir': HLS_DIR,
+            'hls_path': HLS_PATH,
         }
     }
 
@@ -688,6 +714,77 @@ def status():
 def stream_status():
     """Get RTMP stream pusher status"""
     return jsonify(clip_pusher.get_status())
+
+
+@app.route('/api/wake', methods=['POST', 'GET'])
+def api_wake():
+    """Explicit wake: unpauses the stream if idle. Called by the Shield app
+    on launch / resume so ffmpeg restarts before the player loads HLS."""
+    info = clip_pusher.wake()
+    info.update(clip_pusher.get_idle_status())
+    return jsonify(info), 200
+
+
+@app.route('/api/_hls_ping', methods=['GET', 'POST', 'HEAD'])
+def api_hls_ping():
+    """Internal: nginx mirrors every HLS playlist/segment request here so we
+    can track 'last client activity' for the idle auto-pause timer.
+    Fire-and-forget from nginx — must be cheap."""
+    clip_pusher.mark_activity()
+    return ('', 204)
+
+
+# Max age (seconds) of stream.m3u8 before we consider the stream dead.
+# kubelet liveness probe hits this; if it returns 503 the pod is restarted.
+STREAM_STALE_THRESHOLD_SECONDS = int(os.getenv('STREAM_STALE_THRESHOLD_SECONDS', '90'))
+
+
+@app.route('/api/stream-health')
+def stream_health():
+    """Stream-aware liveness probe.
+
+    Returns 503 if:
+      - clip_pusher control loop has exited, or
+      - stream.m3u8 doesn't exist, or
+      - stream.m3u8 mtime is older than STREAM_STALE_THRESHOLD_SECONDS.
+
+    Used as the kubelet livenessProbe so a silently-stuck pusher gets
+    restarted instead of serving a 2-day-old playlist.
+    """
+    playlist = os.path.join(HLS_DIR, 'stream.m3u8')
+    now = time.time()
+
+    # Grace period after startup — clip_pusher needs a moment to produce the
+    # first playlist. Report healthy if process uptime is under the threshold.
+    if now - _PROCESS_START_TS < STREAM_STALE_THRESHOLD_SECONDS:
+        return jsonify({'healthy': True, 'reason': 'startup_grace'}), 200
+
+    if not clip_pusher._running:
+        return jsonify({'healthy': False, 'reason': 'pusher_not_running'}), 503
+
+    # Paused (idle auto-shutdown) is a healthy state — ffmpeg is intentionally
+    # stopped, so stream.m3u8 is expected to be stale. Do not flap the pod.
+    if getattr(clip_pusher, '_paused', False):
+        return jsonify({'healthy': True, 'reason': 'idle_paused'}), 200
+
+    try:
+        mtime = os.path.getmtime(playlist)
+    except OSError as e:
+        return jsonify({'healthy': False, 'reason': f'playlist_missing: {e}'}), 503
+
+    age = now - mtime
+    if age > STREAM_STALE_THRESHOLD_SECONDS:
+        return jsonify({
+            'healthy': False,
+            'reason': 'playlist_stale',
+            'age_seconds': round(age, 1),
+            'threshold_seconds': STREAM_STALE_THRESHOLD_SECONDS,
+        }), 503
+
+    return jsonify({
+        'healthy': True,
+        'age_seconds': round(age, 1),
+    }), 200
 
 
 @app.route('/api/chunks')
@@ -844,8 +941,11 @@ def api_cron():
     if request.method == 'GET':
         available = _cron_available()
         schedule, command = _cron_get_job() if available else (None, None)
+        # In K8s, cron is managed via CronJob resource, not host crontab
+        k8s_managed = not available and os.getenv('KUBERNETES_SERVICE_HOST') is not None
         return jsonify({
             'available': available,
+            'k8s_managed': k8s_managed,
             'schedule': schedule,
             'command': command,
             'project_root': PROJECT_ROOT,
@@ -1051,17 +1151,127 @@ def serve_chunk(filename):
         return jsonify({'error': 'Not found'}), 404
     return send_file(path, mimetype='video/mp4', as_attachment=False)
 
+
+# ── Chunk-level thumbnail endpoint ──
+# Many YouTube source videos referenced by chunks are deleted upstream and
+# return 404 at every size. As a robust fallback we extract a frame directly
+# from the chunk's own .mp4 using ffmpeg and cache it on disk. The endpoint
+# also tries YouTube first (when the chunk has a YT-derived source) so live
+# uploads still get the upstream poster.
+import subprocess as _subprocess  # local import — used only by thumb route
+
+
+def _chunk_thumb_cache_dir():
+    base = STATS_DIR or CHUNK_FOLDER
+    return os.path.join(base, '.chunk_thumbs')
+
+
+_YT_THUMB_SIZES = ('maxresdefault', 'hqdefault', 'mqdefault', 'default')
+
+
+def _try_fetch_youtube_thumb(video_id):
+    """Return (bytes, content_type) for the first YT thumbnail size that
+    actually exists, or (None, None) if the video has no thumbnails."""
+    for size in _YT_THUMB_SIZES:
+        url = f'https://i.ytimg.com/vi/{video_id}/{size}.jpg'
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'random-streamer/1.0'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = resp.read()
+                    # YouTube returns a 1x1 grey "no thumb" placeholder for some
+                    # deleted videos at /default.jpg (~1 KB). Skip it.
+                    if size == 'default' and len(data) < 2000:
+                        continue
+                    return data, resp.headers.get('Content-Type', 'image/jpeg')
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+            continue
+    return None, None
+
+
+def _extract_frame_with_ffmpeg(chunk_path, out_path):
+    """Extract a single frame ~3s into the chunk and write a 480x270 JPEG."""
+    try:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        # -ss before -i for fast seek; -frames:v 1 takes one frame.
+        # scale=480:-2 keeps aspect ratio with even height.
+        result = _subprocess.run(
+            [
+                'ffmpeg', '-y', '-ss', '3', '-i', chunk_path,
+                '-frames:v', '1', '-vf', 'scale=480:-2',
+                '-q:v', '4', out_path,
+            ],
+            stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL,
+            timeout=15,
+        )
+        return result.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+    except (_subprocess.TimeoutExpired, OSError):
+        return False
+
+
+@app.route('/api/chunk-thumb/<path:filename>')
+def serve_chunk_thumb(filename):
+    """Return a JPEG thumbnail for a chunk.
+
+    Strategy:
+      1. Serve from on-disk cache if present.
+      2. Try YouTube (if the chunk's first source has an extractable video_id).
+      3. Fall back to extracting a frame from the chunk .mp4 with ffmpeg.
+
+    URL is `/api/chunk-thumb/<chunkname>.mp4` (we keep the .mp4 in the path
+    so the frontend can build it from `chunk.name` directly).
+    """
+    if not filename or '..' in filename or '/' in filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+    chunk_path = os.path.join(CHUNK_FOLDER, filename)
+    if not os.path.abspath(chunk_path).startswith(os.path.abspath(CHUNK_FOLDER)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isfile(chunk_path):
+        return jsonify({'error': 'Not found'}), 404
+
+    cache_dir = _chunk_thumb_cache_dir()
+    cache_path = os.path.join(cache_dir, os.path.splitext(filename)[0] + '.jpg')
+
+    # 1) Cached hit
+    if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+        return send_file(cache_path, mimetype='image/jpeg', max_age=86400)
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # 2) Try YouTube based on the chunk's metadata
+    try:
+        meta = _load_chunks_meta_cache().get(filename) or {}
+        for src in (meta.get('source_videos') or []):
+            if not isinstance(src, dict):
+                continue
+            vid = _extract_video_id(src.get('path', ''))
+            if not vid:
+                continue
+            data, _ctype = _try_fetch_youtube_thumb(vid)
+            if data:
+                with open(cache_path, 'wb') as f:
+                    f.write(data)
+                return send_file(cache_path, mimetype='image/jpeg', max_age=86400)
+    except Exception:  # pragma: no cover — best-effort, never block fallback
+        pass
+
+    # 3) ffmpeg frame extraction
+    if _extract_frame_with_ffmpeg(chunk_path, cache_path):
+        return send_file(cache_path, mimetype='image/jpeg', max_age=86400)
+
+    return jsonify({'error': 'Could not generate thumbnail'}), 502
+
+
 @app.route('/api/generate_chunk', methods=['POST'])
 def trigger_generation():
     """Trigger the chunk generator container to create new chunks manually"""
-    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
     if os.path.exists(running_file):
         return jsonify({
             'success': False,
             'error': 'Chunk generation is already running. Please wait for it to finish.'
         }), 409
-    # Prefer /app/trigger (named volume) when mounted – avoids host permission issues on Proxmox
-    trigger_dir = TRIGGER_DIR or ('/app/trigger' if os.path.isdir('/app/trigger') else None) or STATS_DIR or CHUNK_FOLDER
+    trigger_dir = _LOCK_DIR
     trigger_file = os.path.join(trigger_dir, '.trigger_generation')
     trigger_type = 'cron' if request.args.get('source') == 'cron' else 'manual'
     try:
@@ -1071,6 +1281,58 @@ def trigger_generation():
         return jsonify({'success': True, 'message': 'Triggered chunk generation. The chunk-generator container will start processing momentarily.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/generate_test_chunk', methods=['POST'])
+def generate_test_chunk():
+    """Trigger a 10-second test chunk and return its playback URL when ready."""
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
+    if os.path.exists(running_file):
+        return jsonify({'success': False, 'error': 'Generation already running.'}), 409
+
+    trigger_dir = _LOCK_DIR
+    trigger_file = os.path.join(trigger_dir, '.trigger_test_generation')
+    done_file = os.path.join(trigger_dir, '.test_generation_done')
+    test_chunk = os.path.join(CHUNK_FOLDER, 'test_clip_10s.mp4')
+
+    # Clean previous
+    for f in (done_file, trigger_file):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    # Write trigger
+    try:
+        os.makedirs(trigger_dir, exist_ok=True)
+        with open(trigger_file, 'w') as f:
+            f.write('test\n')
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    # Poll for completion (generator polls every 5s, generation takes ~10-30s)
+    import time as _time
+    deadline = _time.time() + 120  # 2 minute timeout
+    while _time.time() < deadline:
+        if os.path.exists(done_file):
+            result = 'ok'
+            try:
+                result = open(done_file).read().strip()
+            except OSError:
+                pass
+            try:
+                os.remove(done_file)
+            except OSError:
+                pass
+            if result == 'ok' and os.path.isfile(test_chunk):
+                # Build playback URL
+                host = request.host_url.rstrip('/')
+                url = f"{host}/chunks/test_clip_10s.mp4"
+                return jsonify({'success': True, 'url': url, 'message': 'Test chunk ready!'})
+            return jsonify({'success': False, 'error': 'Test generation failed.'}), 500
+        _time.sleep(2)
+
+    return jsonify({'success': False, 'error': 'Test generation timed out (120s).'}), 504
 
 
 EDITABLE_SETTINGS = {'MAX_CHUNKS', 'CHUNK_DURATION', 'CLIP_MIN', 'CLIP_MAX', 'CHUNKS_PER_RUN', 'HW_ACCEL'}
@@ -1121,14 +1383,14 @@ def update_settings():
 
 @app.route('/api/restart_chunk_generator', methods=['POST'])
 def restart_chunk_generator():
-    """Restart the chunk-generator container via Docker API"""
+    """Trigger the chunk-generator via shared trigger file (works in both Docker Compose and K8s)"""
     try:
-        import docker
-        # Use Unix socket directly to avoid "http+docker" scheme errors (requests 2.32+ / Docker Desktop)
-        client = docker.DockerClient(base_url='unix:///var/run/docker.sock')
-        container = client.containers.get('chunk-generator')
-        container.restart()
-        return jsonify({'success': True, 'message': 'chunk-generator restarted'})
+        trigger_dir = os.environ.get('TRIGGER_DIR', '/app/trigger')
+        trigger_file = os.path.join(trigger_dir, '.trigger_generation')
+        os.makedirs(trigger_dir, exist_ok=True)
+        with open(trigger_file, 'w') as f:
+            f.write('manual')
+        return jsonify({'success': True, 'message': 'chunk-generator trigger sent'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -1136,8 +1398,8 @@ def restart_chunk_generator():
 @app.route('/api/stop_generation', methods=['POST'])
 def stop_generation():
     """Force stop chunk generation by creating a stop signal and clearing running flag"""
-    running_file = os.path.join(CHUNK_FOLDER, '.generation_running')
-    stop_file = os.path.join(CHUNK_FOLDER, '.stop_generation')
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
+    stop_file = os.path.join(_LOCK_DIR, '.stop_generation')
     if not os.path.exists(running_file):
         return jsonify({
             'success': False,
@@ -1154,8 +1416,24 @@ def stop_generation():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@app.route('/api/clear_generation_lock', methods=['POST'])
+def clear_generation_lock():
+    """Manually clear a stale generation lock file (e.g. after a crash)"""
+    running_file = os.path.join(_LOCK_DIR, '.generation_running')
+    stop_file = os.path.join(_LOCK_DIR, '.stop_generation')
+    cleared = []
+    for f in (running_file, stop_file):
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+                cleared.append(os.path.basename(f))
+            except OSError:
+                pass
+    return jsonify({'success': True, 'cleared': cleared})
+
 def start_clip_pusher():
-    """Start the RTMP clip pusher"""
+    """Start the HLS clip pusher"""
     clip_pusher.start()
 
 def shutdown_handler(signum, frame):
@@ -1176,8 +1454,8 @@ if __name__ == '__main__':
     try:
         print(f"\nStarting server internally on port {PORT}...")
         print(f"External API port exposed mapping: {EXTERNAL_PORT}")
-        print(f"RTMP stream: {RTMP_URL}")
-        print(f"HLS playback: http://localhost:{HLS_PORT}/hls/stream.m3u8")
+        print(f"HLS dir: {HLS_DIR}")
+        print(f"HLS playback path: {HLS_PATH}")
         print(f"API: http://localhost:{EXTERNAL_PORT}/api/status")
 
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)

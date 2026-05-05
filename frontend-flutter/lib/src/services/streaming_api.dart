@@ -120,4 +120,14 @@ class StreamingApi {
   Future<void> stopGeneration() async {
     await _apiClient.postJson('/api/stop_generation');
   }
+
+  Future<void> clearGenerationLock() async {
+    await _apiClient.postJson('/api/clear_generation_lock');
+  }
+
+  /// Trigger a 10-second test chunk. Returns the playback URL on success.
+  Future<String> generateTestChunk() async {
+    final json = await _apiClient.postJson('/api/generate_test_chunk');
+    return json['url'] as String;
+  }
 }
